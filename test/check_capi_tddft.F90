@@ -17,8 +17,12 @@ module check_capi_tddft_suite
    !!     roots and the gradient is RI-MP2's; an effective core potential (HI/def2-SVP) refuses the excited-state
    !!     gradient as the ground-state one does; TDDFT after trc_load_scf (no grid in the loaded result) gives the roots
    !!     of the SCF that was saved.
+   !!  6. a SPHERICAL basis (water HF/cc-pVDZ, no trc_set_force_cartesian): trc_check_tddft accepts it, and the TDA and
+   !!     RPA gradients of a root match pyscf with mol.cart = False (tddft_sph_grad_water_cc-pvdz_hf.ref,
+   !!     tddft_sph_rpa_grad_water_cc-pvdz_hf.ref).
    !! Run from test/. A test-drive suite. The argument `pbe` runs only the water PBE gradient (2.), the rest only without
-   !! it: two runs of one program, each around ten seconds.
+   !! it: two runs of one program, the first around 25 s on a host build
+   !! (the spherical case adds about 10 s), the second around ten.
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char, c_null_ptr
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
@@ -56,6 +60,7 @@ contains
       end if
       testsuite = [ &
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
+                  new_unittest("spherical basis: TDA and RPA gradients of a root vs pyscf", test_spherical), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
                   new_unittest("refusals", test_refusals), &
                   new_unittest("missed-root iterations: 0 is the default, 24 reaches the solver", &
@@ -83,18 +88,23 @@ contains
       end do
    end function message_of
 
-   subroutine open_handle(error, handle, functional, basis, ok, xyz)
-      !! A water (or `xyz`) handle with the basis, the method and the SCF settings of the pyscf references.
+   subroutine open_handle(error, handle, functional, basis, ok, xyz, spherical)
+      !! A water (or `xyz`) handle with the basis (Cartesian functions unless `spherical`), the method and the SCF
+      !! settings of the pyscf references.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr), intent(out) :: handle
       character(len=*), intent(in) :: functional, basis
       logical, intent(out) :: ok
       character(len=*), intent(in), optional :: xyz
+      logical, intent(in), optional :: spherical
       integer :: natm
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       integer(c_int) :: rc
+      logical :: cart
 
+      cart = .true.
+      if (present(spherical)) cart = .not. spherical
       if (present(xyz)) then
          call read_xyz(xyz, natm, zint, at_r)
       else
@@ -103,7 +113,7 @@ contains
       rc = trc_create(handle)
       if (rc == TRC_OK) rc = trc_set_molecule(handle, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
                                               0_c_int, 1_c_int)
-      if (rc == TRC_OK) rc = trc_set_force_cartesian(handle, 1_c_int)
+      if (rc == TRC_OK .and. cart) rc = trc_set_force_cartesian(handle, 1_c_int)
       if (rc == TRC_OK) rc = trc_set_basis_json(handle, basis//c_null_char)
       if (rc == TRC_OK) rc = trc_set_method(handle, functional//c_null_char, 3_c_int)
       if (rc == TRC_OK) rc = trc_set_convergence(handle, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
@@ -136,19 +146,26 @@ contains
       gref = all_roots(:, :, root)
    end subroutine ref_gradient
 
-   subroutine hf_root(error, ref_name, tda, root)
-      !! Hartree-Fock water/6-31G, three roots, TDA or RPA: the gradient of `root` against the reference.
+   subroutine hf_root(error, ref_name, tda, root, basis, spherical)
+      !! Hartree-Fock water (6-31G, or `basis` with `spherical` functions), three roots, TDA or RPA: the gradient of
+      !! `root` against the reference.
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: ref_name
       logical, intent(in) :: tda
       integer, intent(in) :: root
+      character(len=*), intent(in), optional :: basis
+      logical, intent(in), optional :: spherical
       type(c_ptr) :: handle
       real(c_double) :: grad(9), omega(3), osc(3), ynorm(3), dipole(9), e_total, e_scf, weight(3)
       real(dp) :: gref(3, 3), e_ref
       integer(c_int) :: rc, nroots, hole(3), particle(3)
       logical :: ok
 
-      call open_handle(error, handle, "", "basis_sets/6-31g.json", ok)
+      if (present(basis)) then
+         call open_handle(error, handle, "", basis, ok, spherical=spherical)
+      else
+         call open_handle(error, handle, "", "basis_sets/6-31g.json", ok)
+      end if
       if (allocated(error)) return
       rc = trc_set_tddft(handle, 3_c_int, merge(1_c_int, 0_c_int, tda), 1_c_int, int(root, c_int), 1_c_int)
       if (rc == TRC_OK) rc = trc_set_tddft_convergence(handle, 1.0e-10_c_double, 0_c_int, 1.0e-11_c_double, 0_c_int, 0_c_int)
@@ -195,6 +212,24 @@ contains
       if (allocated(error)) return
       call hf_root(error, "tddft_rpa_grad_water_6-31g_hf.ref", .false., 3)
    end subroutine test_hf
+
+   subroutine test_spherical(error)
+      !! The same through a spherical basis: nothing is set to force Cartesian functions.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      integer(c_int) :: rc
+      logical :: ok
+
+      call open_handle(error, handle, "", "basis_sets/cc-pvdz.json", ok, spherical=.true.)
+      if (allocated(error)) return
+      rc = trc_check_tddft(handle, 1_c_int)
+      call check(error, rc == TRC_OK, "trc_check_tddft must accept a spherical basis: "//message_of(handle))
+      rc = trc_destroy(handle)
+      if (allocated(error)) return
+      call hf_root(error, "tddft_sph_grad_water_cc-pvdz_hf.ref", .true., 2, "basis_sets/cc-pvdz.json", .true.)
+      if (allocated(error)) return
+      call hf_root(error, "tddft_sph_rpa_grad_water_cc-pvdz_hf.ref", .false., 3, "basis_sets/cc-pvdz.json", .true.)
+   end subroutine test_spherical
 
    subroutine test_pbe(error)
       type(error_type), allocatable, intent(out) :: error

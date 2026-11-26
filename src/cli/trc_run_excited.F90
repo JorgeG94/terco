@@ -156,8 +156,7 @@ contains
    module subroutine run_tddft_parse(r)
       !! Reads `--tddft` and the `--tddft-*` options. Every combination the method does not cover is refused here,
       !! before the SCF, with the library's own message where it has one: a triplet, an unrestricted reference, a
-      !! meta-GGA, range-separated or VV10 functional, --df, --pcm. (A spherical basis is only known once the basis
-      !! has loaded: `trc_check_tddft` refuses it, still before the SCF.)
+      !! meta-GGA, range-separated or VV10 functional, --df, --pcm.
       type(run_t), intent(inout) :: r
       logical :: any_option
 

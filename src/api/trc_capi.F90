@@ -374,7 +374,9 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 34
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 35
+   !! 1.35: trc_run_tddft, trc_check_tddft and the TDDFT trc_run_gradient accept a
+   !! spherical orbital basis (refused before). No signature change.
    !! 1.34: trc_run_gradient accepts --df with a spherical orbital and auxiliary
    !! basis (refused before). No signature change.
    !! 1.33: trc_tddft_window_open, a new entry point (the number of candidate Ritz
@@ -6256,9 +6258,7 @@ contains
       character(len=*), intent(in) :: who
       character(len=:), allocatable :: refusal
       refusal = ""
-      if (cx%bb%b%spherical) then
-         refusal = who//": a spherical basis is not implemented (set force_cartesian before loading the basis)"
-      else if (.not. reference_is_aufbau(cx)) then
+      if (.not. reference_is_aufbau(cx)) then
          refusal = who//": the response needs an aufbau reference (this SCF holds a non-aufbau occupation)"
       else if (cx%rimp2_ok) then
          refusal = who//": RI-MP2/double-hybrid excited states are not implemented"
@@ -6285,7 +6285,7 @@ contains
       !! settings, answered from the settings alone, before any SCF runs:
       !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
       !! would give -- a triplet, an unrestricted reference, a meta-GGA,
-      !! range-separated, VV10 or double-hybrid functional, a spherical basis,
+      !! range-separated, VV10 or double-hybrid functional, an f basis,
       !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
       !! result held. A geometry optimiser asks this before its first step.
       !! What only a finished SCF knows (functions dropped by canonical
@@ -6342,7 +6342,8 @@ contains
       !! method). Builds its own pair list and ERI engine at the context's
       !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
       !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
-      !! trc_tddft_character, trc_tddft_energy.
+      !! trc_tddft_character, trc_tddft_energy. (ABI 1.35: a spherical orbital
+      !! basis was refused before.)
       !!
       !! After it, trc_run_gradient is the gradient of the TARGET root's total
       !! energy (trc_set_tddft), grid response included unless it was turned

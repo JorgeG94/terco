@@ -33,8 +33,21 @@ module trc_tddft_run
    !!
    !! WHAT IS REFUSED, in `res%err` and before any work (trc_tddft_run_refusal):
    !! triplets, UHF/UKS, meta-GGAs, range-separated hybrids, VV10, double
-   !! hybrids, a spherical basis, a reference that is not (nao, nao) (functions
-   !! dropped for linear dependence), a root outside 1..nroots.
+   !! hybrids, a reference with functions dropped for linear dependence
+   !! (`scf%n_lindep > 0`: the dropped-function path is untested), an f basis,
+   !! a root outside 1..nroots.
+   !!
+   !! SPHERICAL BASES. Every integral, XC and multipole kernel stays Cartesian
+   !! (trc_sph.F90's header), so a spherical SCF's orbitals C_sph (nao_sph, nao_sph)
+   !! are folded ONCE per call, in `run_state_build`, to Cartesian AO coefficients
+   !! C_cart = T C_sph (nao, nao_sph) and the density to T D T^T. The solver and
+   !! the gradient then run unchanged over C_cart with nmo = nao_sph < nao: T maps
+   !! spherical functions into the Cartesian space exactly, so
+   !! C_cart^T S_cart C_cart = 1 and every AO quantity (trial and transition
+   !! densities, the relaxed density, W, the transition dipole) is the exact
+   !! Cartesian image of the spherical one. The fold is one host/device round
+   !! trip per call (O(nao nmo) for the orbitals, O(nao^2) for the density), not
+   !! per iteration.
    !!
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
@@ -49,6 +62,7 @@ module trc_tddft_run
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_eri_thresh_env
    use trc_scf_context, only: trc_grid_cache_t
+   use trc_sph, only: sph_mo_to_cart, sph_sph_to_cart
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_reference_t, trc_tddft_solve_rks, &
                         trc_tddft_refuse_reason
    use trc_tddft_grad, only: trc_tddft_grad_options_t, trc_tddft_gradient_rks
@@ -153,8 +167,8 @@ contains
 
    function trc_tddft_run_refusal(sopts, opts, b) result(msg)
       !! Why this run cannot happen, or an empty string: the solver's own
-      !! reasons (functional, spin), an unrestricted reference, a spherical
-      !! basis, an out-of-range root. Answered from the settings alone.
+      !! reasons (functional, spin), an unrestricted reference, an f basis,
+      !! an out-of-range root. Answered from the settings alone.
       type(trc_scf_options_t), intent(in) :: sopts
       type(trc_tddft_run_options_t), intent(in) :: opts
       type(trc_basis_t), intent(in), optional :: b
@@ -187,9 +201,7 @@ contains
       end if
       if (len_trim(msg) > 0) return
       if (present(b)) then
-         if (b%spherical) then
-            msg = "trc_tddft: a spherical basis is not implemented (use Cartesian functions: --cart)"
-         else if (allocated(b%sh_l)) then
+         if (allocated(b%sh_l)) then
             ! The solver refuses an f basis too, but only after the SCF: the transition dipole needs
             ! multipole integrals, which stop at d. Asked here, a caller is refused before paying for it.
             msg = trc_tddft_refuse_reason(probe, lmax=maxval(b%sh_l))
@@ -229,6 +241,51 @@ contains
       end do
    end function trc_tddft_run_gap_note
 
+   function run_reference_refusal(b, scf, reason) result(msg)
+      !! `reason` if set, else why `scf` is not a reference this run can take: unrestricted, orbitals
+      !! not square in the SCF's own space (nao_sph for a spherical basis, nao for a Cartesian one), or
+      !! functions dropped for linear dependence (nmo < n; untested here, so refused).
+      type(trc_basis_t), intent(in) :: b
+      type(trc_scf_result_t), intent(in) :: scf
+      character(len=256), intent(in) :: reason
+      character(len=256) :: msg
+      integer :: nsp
+
+      msg = reason
+      if (len_trim(msg) > 0) return
+      nsp = merge(b%nao_sph, b%nao, b%spherical)
+      if (scf%nspin /= 1 .or. size(scf%cmo, 1) /= nsp .or. size(scf%cmo, 2) /= nsp .or. scf%n_lindep /= 0) then
+         msg = "trc_tddft: needs a restricted reference whose orbitals are square in this basis "// &
+               "(functions dropped for linear dependence are not implemented)"
+      end if
+   end function run_reference_refusal
+
+   subroutine run_cartesian_orbitals(b, scf, ccart, dcart)
+      !! The reference's orbitals and total density as Cartesian AO matrices: `scf`'s own for a Cartesian
+      !! basis, C_cart = T C_sph (nao, nao_sph) and T D T^T for a spherical one (module header). The
+      !! fold runs on the device and comes back to the host, where the reference is stored.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_scf_result_t), intent(in) :: scf
+      real(dp), allocatable, intent(out) :: ccart(:, :), dcart(:, :)
+      real(dp), allocatable :: csph(:, :), dsph(:, :)
+      integer :: ns
+
+      if (.not. b%spherical) then
+         ccart = scf%cmo(:, :, 1)
+         dcart = scf%dmat(:, :, 1)
+         return
+      end if
+      ns = b%nao_sph
+      csph = scf%cmo(:, :, 1)
+      dsph = scf%dmat(:, :, 1)
+      allocate (ccart(b%nao, ns), dcart(b%nao, b%nao))
+      !$acc enter data copyin(csph, dsph) create(ccart, dcart)
+      call sph_mo_to_cart(b, ns, csph, ccart)
+      call sph_sph_to_cart(b, dsph, dcart)
+      !$acc update self(ccart, dcart)
+      !$acc exit data delete(csph, dsph, ccart, dcart)
+   end subroutine run_cartesian_orbitals
+
    subroutine run_state_build(b, scf, nocc, sopts, grid_response, state, err, cache)
       !! The pair list, the engine, the grid and the reference of `scf`.
       type(trc_basis_t), intent(in) :: b
@@ -242,6 +299,7 @@ contains
       type(trc_decontract_options_t) :: policy
       type(dft_grid_options_t) :: gopts
       real(dp) :: thresh
+      real(dp), allocatable :: ccart(:, :), dcart(:, :)
       logical :: found, use_cache
       integer :: npoint
 
@@ -256,12 +314,13 @@ contains
          end if
          policy = decontract_options_for_exchange(sopts%decontract, state%func%exx, state%func%exx_lr)
       end if
+      call run_cartesian_orbitals(b, scf, ccart, dcart)
       call state%pl%build(b, thresh)
       call state%pl%to_device()
       call state%eri%build(b, thresh, decontract=policy)
       state%built = .true.
       if (.not. state%dft) then
-         call state%ref%set(nocc, scf%cmo(:, :, 1), scf%eps(:, 1), scf%dmat(:, :, 1))
+         call state%ref%set(nocc, ccart, scf%eps(1:size(ccart, 2), 1), dcart)
          return
       end if
       npoint = 0
@@ -291,7 +350,7 @@ contains
          call state%xg%to_device()
          state%own_grid = .true.
       end if
-      call state%ref%set(nocc, scf%cmo(:, :, 1), scf%eps(:, 1), scf%dmat(:, :, 1), state%func)
+      call state%ref%set(nocc, ccart, scf%eps(1:size(ccart, 2), 1), dcart, state%func)
    end subroutine run_state_build
 
    subroutine run_state_release(state)
@@ -381,7 +440,7 @@ contains
    subroutine trc_tddft_run_solve(b, la, scf, nocc, sopts, opts, res, cache)
       !!
       !! The lowest `opts%nroots` singlet roots of the converged restricted SCF
-      !! `scf` (orbitals in the Cartesian basis `b`, `nocc` doubly occupied,
+      !! `scf` (orbitals in the SCF's own space: Cartesian, or spherical when `b%spherical`; `nocc` doubly occupied,
       !! `sopts` the settings the SCF ran with): `res%omega`, `res%osc`,
       !! `res%ynorm`, `res%tdip` and the dominant pairs. A refusal or a failed
       !! solve is in `res%err`. `cache` is the SCF's own grid cache, to save
@@ -402,9 +461,7 @@ contains
       call result_reset(res)
       res%tda = opts%tda
       reason = trc_tddft_run_refusal(sopts, opts, b)
-      if (len_trim(reason) == 0 .and. (scf%nspin /= 1 .or. size(scf%cmo, 1) /= b%nao .or. size(scf%cmo, 2) /= b%nao)) then
-         reason = "trc_tddft: needs a restricted reference whose orbitals are (nao, nao) in this basis"
-      end if
+      reason = run_reference_refusal(b, scf, reason)
       if (len_trim(reason) > 0) then
          call res%err%set(ERROR_VALIDATION, trim(reason))
          return
@@ -488,6 +545,7 @@ contains
             reason = "trc_tddft: the gradient's approximation ("//merge("TDA", "RPA", opts%tda)// &
                      ") is not that of the solve ("//merge("TDA", "RPA", res%tda)//")"
          end if
+         reason = run_reference_refusal(b, scf, reason)
       end if
       if (len_trim(reason) > 0) then
          call res%err%set(ERROR_VALIDATION, trim(reason))

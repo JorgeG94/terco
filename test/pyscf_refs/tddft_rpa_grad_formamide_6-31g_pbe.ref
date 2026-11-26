@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_rpa_grad"] -> gen_tddft_rpa_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 59705356a2567b92208bbbb80291aa443621a27dd33dcd80083b922186b7e32e
+# hash: 8ef4a894a9f298a5780e1ac43f95ecd1035e85024fe0b137ae31c8531992f83f
 # files: test/check_tddft_rpa_grad.F90 test/basis_sets/6-31g.json test/formamide.xyz
 E_SCF -1.69644359328935764e+02
 GRAD 3 6 3

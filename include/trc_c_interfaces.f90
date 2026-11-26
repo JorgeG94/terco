@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 34
+   integer(c_int), parameter :: TRC_ABI_MINOR = 35
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1716,7 +1716,7 @@ module trc_c_interfaces
          !! settings, answered from the settings alone, before any SCF runs:
          !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
          !! would give -- a triplet, an unrestricted reference, a meta-GGA,
-         !! range-separated, VV10 or double-hybrid functional, a spherical basis,
+         !! range-separated, VV10 or double-hybrid functional, an f basis,
          !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
          !! result held. A geometry optimiser asks this before its first step.
          !! What only a finished SCF knows (functions dropped by canonical
@@ -1735,7 +1735,8 @@ module trc_c_interfaces
          !! method). Builds its own pair list and ERI engine at the context's
          !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
          !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
-         !! trc_tddft_character, trc_tddft_energy.
+         !! trc_tddft_character, trc_tddft_energy. (ABI 1.35: a spherical orbital
+         !! basis was refused before.)
          !!
          !! After it, trc_run_gradient is the gradient of the TARGET root's total
          !! energy (trc_set_tddft), grid response included unless it was turned

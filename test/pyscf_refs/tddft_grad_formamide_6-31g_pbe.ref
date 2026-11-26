@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_grad"] -> gen_tddft_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 5c17a09dc786f4ebcf36cd0de7fa99e9562333af4ac41fe4c2919dbcdb5cec3e
+# hash: 5c242eb098d1c5a1dd6f400a070eaf320629bf1cc8913e82d703fcf3c01e42f2
 # files: test/check_tddft_grad.F90 test/basis_sets/6-31g.json test/formamide.xyz
 E_SCF -1.69644359328936019e+02
 GRAD 3 6 3

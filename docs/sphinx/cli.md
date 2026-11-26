@@ -121,7 +121,7 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 
 | Flag | Meaning |
 |---|---|
-| `--tddft` | singlet excitation energies, oscillator strengths and (RPA) \|\|Y\|\|^2 after the SCF (closed-shell RHF/RKS, Cartesian basis; LDA, GGA and global-hybrid functionals) |
+| `--tddft` | singlet excitation energies, oscillator strengths and (RPA) \|\|Y\|\|^2 after the SCF (closed-shell RHF/RKS; LDA, GGA and global-hybrid functionals) |
 | `--tddft-roots` | roots wanted (3) |
 | `--tddft-root` | the root `--grad` and `--opt` follow, from 1 (1) |
 | `--tddft-approx` | `tda` (the default; CIS for Hartree-Fock) or `rpa` (TDHF / Casida) |
@@ -156,7 +156,7 @@ block counts both warnings (`tddft_state_changes`, `tddft_gap_warnings`).
 refused with `--tddft`: the excited-state gradient has no Hessian to difference.
 
 Refused before the SCF, with the reason: triplets, an open shell, meta-GGAs,
-range-separated hybrids, VV10, double hybrids, a spherical basis (add `--cart`),
+range-separated hybrids, VV10, double hybrids, an f basis,
 `--df`, `--pcm`, `--rimp2`, `--riccsd`, `--hessian` and more than one rank.
 
 ```sh

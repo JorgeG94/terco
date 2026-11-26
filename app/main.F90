@@ -244,7 +244,7 @@ program trc_main
                          "converged, with exit status 1; the ijk routine needs 24 v^3 bytes a triple (v virtual "// &
                          "orbitals), defaults to 2 GiB and raises that to one triple; no effect on the reference routine")
    call r%cli%add_flag("tddft", "singlet excitation energies, oscillator strengths and (RPA) ||Y||^2 of the lowest "// &
-                       "--tddft-roots states after the SCF (closed-shell RHF/RKS, Cartesian basis; LDA, GGA and "// &
+                       "--tddft-roots states after the SCF (closed-shell RHF/RKS; LDA, GGA and "// &
                        "global-hybrid functionals). With --grad the gradient of E_SCF + omega of the root "// &
                        "--tddft-root, with --opt its geometry optimisation. Refused with triplets, UHF/UKS, "// &
                        "meta-GGAs, range-separated hybrids, VV10, double hybrids, --df, --pcm, --rimp2, --riccsd "// &
@@ -1392,7 +1392,7 @@ program trc_main
    end if
    if (r%tddft) then
       call run_tddft_configure(r)
-      ! Before any SCF: a spherical basis, an unrestricted spin state and the gradient's own limits are known now.
+      ! Before any SCF: an f basis, an unrestricted spin state and the gradient's own limits are known now.
       call run_api(r, trc_check_tddft(r%h, merge(1_c_int, 0_c_int, r%grad .or. r%opt)))
    end if
 

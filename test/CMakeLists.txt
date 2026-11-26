@@ -3049,13 +3049,39 @@ endforeach()
 terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
 # The two gradients and the finite difference (four SCFs) are runs of the same program of their own.
-foreach(_mode grad_tda grad_rpa fd missed_root density_screen rpa_route)
+foreach(_mode grad_tda grad_rpa fd fd_sph missed_root density_screen rpa_route)
   add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
   set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endforeach()
 # LONG: the finite difference took 22-33 s on a loaded host build; nightly only.
-set_tests_properties(terco/check_tddft_api_fd PROPERTIES LABELS LONG)
+set_tests_properties(terco/check_tddft_api_fd terco/check_tddft_api_fd_sph PROPERTIES LABELS LONG)
+
+# TDA and RPA excited states of a SPHERICAL basis (cc-pVDZ) through the Fortran entry, against
+# pyscf with mol.cart = False (generate.py's tddft_sph_* cases): energies, oscillator strengths and
+# ||Y||^2 for water and formamide with HF, PBE and B3LYP, and the TDA and RPA gradients (the
+# trailing `grad` argument) of water with all three and of formamide with HF. See
+# check_tddft_sph.F90's own header.
+foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad formamide:pbe formamide:b3lyp)
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _f)
+  list(LENGTH _cl _ncl)
+  set(_grad "")
+  if(_ncl GREATER 2)
+    set(_grad grad)
+  endif()
+  terco_add_check(check_tddft_sph_${_mol}_${_f} check_tddft_sph.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS ${_mol}.xyz ${_mol} ${_f} ${CMAKE_CURRENT_BINARY_DIR}/tddft_sph_${_mol}_${_f}_probe.bin ${_grad})
+  target_link_libraries(check_tddft_sph_${_mol}_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_sph_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_sph_${_mol}_${_f})
+endforeach()
+# LONG: formamide PBE and B3LYP (energies only) took 42-72 s and 58-92 s on a loaded host build, the size of the
+# Cartesian formamide Kohn-Sham checks above and the check_tddft_basis tier; nightly only. Formamide HF with its six
+# gradients (57-95 s) stays on pull requests, like the Cartesian formamide Hartree-Fock gradient cases, and the water
+# cases (3-39 s) run on every pull request.
+set_tests_properties(terco/check_tddft_sph_formamide_pbe terco/check_tddft_sph_formamide_b3lyp PROPERTIES LABELS LONG)
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of

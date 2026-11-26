@@ -32,7 +32,8 @@ module trc_tddft_rpa_grad
    !! relaxed density and the pairs of the derivative sweep are here.
    !!
    !! SCOPE. As trc_tddft_grad: restricted, singlet, LDA/GGA and global
-   !! hybrids, Cartesian basis, no density fitting.
+   !! hybrids, no density fitting; the orbitals are Cartesian AO coefficients
+   !! (nao, nmo) as in trc_tddft_grad.
    !!
    use pic_types, only: dp, int32
    use pic_logger, only: global_logger
@@ -74,11 +75,12 @@ contains
       type(trc_tddft_reference_t), intent(in) :: ref
       type(trc_tddft_result_t), intent(in) :: td
       real(dp), allocatable :: doo(:, :), dvv(:, :), half(:, :), xk(:, :), yk(:, :), plus(:, :), minus(:, :)
-      integer :: k
+      integer :: k, nmo
 
       st%n = size(ref%cmo, 1)
       st%nocc = ref%nocc
-      st%nvir = st%n - ref%nocc
+      nmo = size(ref%cmo, 2)
+      st%nvir = nmo - ref%nocc
       st%nroots = size(td%xamp, 3)
       st%dft = ref%dft
       st%cx = 1.0_dp
@@ -86,8 +88,8 @@ contains
       st%has_budget = ref%has_budget
       st%budget = ref%budget
       st%cocc = ref%cmo(:, 1:st%nocc)
-      st%cvir = ref%cmo(:, st%nocc + 1:st%n)
-      st%eps = ref%eps(1:st%n)
+      st%cvir = ref%cmo(:, st%nocc + 1:nmo)
+      st%eps = ref%eps(1:nmo)
       st%xamp = td%xamp
       st%yamp = td%yamp
       allocate (st%tmat(st%n, st%n, st%nroots), st%tminus(st%n, st%n, st%nroots), st%pdiff(st%n, st%n, st%nroots))
@@ -389,8 +391,6 @@ contains
          msg = "trc_tddft_rpa_grad: the result has no Y amplitudes (yamp); an RPA solve fills them"
       else if (any(shape(td%yamp) /= shape(td%xamp))) then
          msg = "trc_tddft_rpa_grad: yamp and xamp differ in shape"
-      else if (b%spherical) then
-         msg = "trc_tddft_rpa_grad: a spherical basis is not implemented"
       end if
    end function rpa_grad_refuse_reason
 

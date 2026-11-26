@@ -172,19 +172,19 @@ contains
       !! RHF CPHF: `ncomp` right-hand sides, solved together (this module's
       !! own header: one CG recurrence per column, the matvecs of the columns
       !! still iterating built in one batched Fock pass, in groups of at most
-      !! `opts%max_batch`). `cmo` (nao, nao), `bvec` (nvirt, nocc, ncomp) and `u`
+      !! `opts%max_batch`). `cmo` (nao, nocc + nvirt), `bvec` (nvirt, nocc, ncomp) and `u`
       !! (same shape, overwritten with the solution) must already be
-      !! device-resident; `eps` (nao) is host, read once to build the diagonal
+      !! device-resident; `eps` (nocc + nvirt) is host, read once to build the diagonal
       !! preconditioner. `res%iterations(c)` is column c's own count.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nocc, nvirt, ncomp
-      real(dp), intent(in) :: cmo(nao, nao)
-      !! Occupied columns 1:nocc, virtual nocc+1:nao, ascending orbital
+      real(dp), intent(in) :: cmo(nao, nocc + nvirt)
+      !! Occupied columns 1:nocc, virtual nocc+1:nocc+nvirt, ascending orbital
       !! energy -- trc_scf_driver's own convention.
-      real(dp), intent(in) :: eps(nao)
+      real(dp), intent(in) :: eps(nocc + nvirt)
       real(dp), intent(in) :: bvec(nvirt, nocc, ncomp)
       real(dp), intent(inout) :: u(nvirt, nocc, ncomp)
       type(trc_cphf_options_t), intent(in) :: opts
@@ -242,7 +242,7 @@ contains
          integer :: k, kk
          do k = 1, cg%na
             kk = cg%act(k)
-            call lp%gemm_mat(cmo(:, nocc + 1:nao), cg%p(:, :, kk), temporary_no)
+            call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), cg%p(:, :, kk), temporary_no)
             call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
             call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
             call cphf_add_matrix(nao, nao, d_u(:, :, k), d_ut, d_u(:, :, k))
@@ -255,7 +255,7 @@ contains
          do k = 1, cg%na
             kk = cg%act(k)
             call lp%gemm_mat(g_u(:, :, k), cmo(:, 1:nocc), temporary_no2)
-            call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
+            call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
             call cphf_add_diag(nvirt, nocc, cg%diagv, cg%p(:, :, kk), cg%ap(:, :, kk))
          end do
       end subroutine matvec

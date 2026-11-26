@@ -10,8 +10,10 @@ module check_cli_tddft_suite
    !!     grad.tdrks (tddft_grad_water_6-31g_pbe.ref, Pulay only), and the default run (grid response) differing
    !!     from it by the grid's own derivative, about 1e-5, with the JSON saying which energy it differentiates;
    !!  5. what is refused before the SCF, with the reason: a triplet, a meta-GGA, a range-separated hybrid, a
-   !!     double hybrid, an open shell, --hessian, a root out of range, a --tddft-* option without --tddft,
-   !!     contradicting grid response flags and a spherical basis.
+   !!     double hybrid, an open shell, --hessian, a root out of range, a --tddft-* option without --tddft
+   !!     and contradicting grid response flags;
+   !!  6. a SPHERICAL basis (water PBE/cc-pVDZ, no --cart): TDA and RPA energies, oscillator strengths and ||Y||^2
+   !!     and the Pulay-only gradient of root 2 against pyscf with mol.cart = False (tddft_sph_*.ref).
    !! Arguments: the terco executable, a scratch path for its --json output and optionally the mode (see `mode_arg`).
    !! Run from test/.
    !!
@@ -49,7 +51,10 @@ contains
    subroutine collect_cli_tddft_tests(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == "grad") then
-         testsuite = [new_unittest("CLI --tddft --grad --no-tddft-grid-response: the gradient matches pyscf", test_gradient)]
+         testsuite = [ &
+                     new_unittest("CLI --tddft --grad --no-tddft-grid-response: the gradient matches pyscf", test_gradient), &
+                     new_unittest("CLI --tddft --grad on a spherical basis matches pyscf (TDA and RPA)", test_gradient_sph) &
+                     ]
       else if (trim(mode_arg) == "grid") then
          testsuite = [new_unittest("CLI --tddft --grad: the grid response is the default and moves the gradient", &
                                    test_grid_response)]
@@ -60,6 +65,7 @@ contains
                      new_unittest("CLI --tddft TDA energies match pyscf, in Eh and eV", test_tda), &
                      new_unittest("CLI --tddft --tddft-approx rpa: energies and ||Y||^2 match pyscf", test_rpa), &
                      new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml), &
+                     new_unittest("CLI --tddft on a spherical basis: TDA and RPA match pyscf", test_spherical), &
                      new_unittest("CLI --tddft-missed-root-iterations and its TOML key reach the solver", test_missed_root), &
                      new_unittest("CLI --no-tddft-density-screen and its TOML key reach the solver", test_density_screen) &
                      ]
@@ -171,6 +177,27 @@ contains
       if (.not. allocated(error)) call compare_with_ref(error, "rpa_water_6-31gs_pbe.ref", omega, osc, ynorm, .true.)
       call json%destroy()
    end subroutine test_rpa
+
+   subroutine test_spherical(error)
+      !! cc-pVDZ is a spherical basis and no --cart is given: the run folds the orbitals to Cartesian coefficients.
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp), allocatable :: omega(:), osc(:), ynorm(:)
+
+      call run_cli(error, 'water.xyz -b basis_sets/cc-pvdz.json -f pbe --tddft --tddft-roots 3', &
+                   g_probe//'.sph.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (.not. allocated(error)) call compare_with_ref(error, "tddft_sph_water_cc-pvdz_pbe.ref", omega, osc, ynorm, .false.)
+      call json%destroy()
+      if (allocated(error)) return
+      call run_cli(error, 'water.xyz -b basis_sets/cc-pvdz.json -f pbe --tddft --tddft-roots 3 --tddft-approx rpa', &
+                   g_probe//'.sph_rpa.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (.not. allocated(error)) call compare_with_ref(error, "tddft_sph_rpa_water_cc-pvdz_pbe.ref", omega, osc, ynorm, .true.)
+      call json%destroy()
+   end subroutine test_spherical
 
    subroutine test_toml(error)
       type(error_type), allocatable, intent(out) :: error
@@ -380,6 +407,37 @@ contains
                  to_string(maxval(abs(pulay - gref(:, :, 2))), "es10.2"))
    end subroutine test_gradient
 
+   subroutine test_gradient_sph(error)
+      !! The spherical basis' Pulay-only gradient of root 2, TDA and RPA, against pyscf's (cart = False).
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp) :: g(3, 3), gref(3, 3, 3), e_ref
+      character(len=:), allocatable :: what
+      integer :: u, pass
+      character(len=3), parameter :: APPROX(2) = ["tda", "rpa"]
+      character(len=64), parameter :: REFS(2) = [character(len=64) :: "tddft_sph_grad_water_cc-pvdz_pbe.ref", &
+                                                                      "tddft_sph_rpa_grad_water_cc-pvdz_pbe.ref"]
+
+      do pass = 1, 2
+         call run_cli(error, 'water.xyz -b basis_sets/cc-pvdz.json -f pbe --tddft --tddft-roots 3 --tddft-root 2 '// &
+                      '--tddft-approx '//APPROX(pass)//' --no-tddft-grid-response --tddft-tol 1e-10 '// &
+                      '--tddft-cpks-tol 1e-11 --grad', g_probe//'.sph_grad_'//APPROX(pass)//'.json', json)
+         if (allocated(error)) return
+         call read_gradient(error, json, g, what)
+         call json%destroy()
+         if (allocated(error)) return
+         call check(error, index(what, "tddft root 2") > 0, "the JSON does not say the gradient is of root 2: '"//what//"'")
+         if (allocated(error)) return
+         call ref_require(trim(REFS(pass)), u)
+         call ref_read_real(u, "E_SCF", e_ref)
+         call ref_read_matrix3(u, "GRAD", 3, 3, 3, gref)
+         call ref_close(u)
+         call check(error, maxval(abs(g - gref(:, :, 2))) < TOL_GRAD, "spherical "//APPROX(pass)// &
+                    " gradient of root 2 vs pyscf, "//to_string(maxval(abs(g - gref(:, :, 2))), "es10.2"))
+         if (allocated(error)) return
+      end do
+   end subroutine test_gradient_sph
+
    subroutine test_grid_response(error)
       !! The default gradient has the grid response and differs from pyscf's Pulay-only one by the grid's derivative
       !! (about 1e-5): the reference is that Pulay-only gradient, which test_gradient shows the CLI reproduces with
@@ -458,8 +516,6 @@ contains
       call expect_refusal(error, 'water.xyz -b basis_sets/sto-3g.json --tddft-roots 2', '.alone.out', "need --tddft")
       if (allocated(error)) return
       call expect_refusal(error, BASE//' -f pbe --tddft-grid-response --no-tddft-grid-response', '.flags.out', "contradict")
-      if (allocated(error)) return
-      call expect_refusal(error, 'water.xyz -b basis_sets/cc-pvdz.json --tddft', '.spherical.out', "spherical basis")
       if (allocated(error)) return
       ! The gap window may be zero (the warning off) but not negative; the C ABI (trc_opt_set_tddft) agrees.
       call expect_refusal(error, BASE//' --tddft-gap-warn -0.001', '.gap.out', "zero or more")
