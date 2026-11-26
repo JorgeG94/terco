@@ -20,9 +20,7 @@ module check_contract_suite
    !!      the speed rule and of the memory bound.
    !!   4. Empty extents, and a NaN beta on every path.
    !!   5. Refusals, among them extents whose int64 product wraps.
-   !!
-   !! A `work` shorter than `work_size` stops the program, so it is not tested
-   !! here.
+   !!   6. The refusals of `apply`: in `plan%status`, with C untouched.
    !!
    !! Every index letter has its own extent, so a confusion of two of them
    !! changes a shape or a value. The fills are small integers: every
@@ -34,7 +32,7 @@ module check_contract_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_contract, only: trc_contract_plan_t, contract_permute
    use trc_linalg, only: trc_linalg_t
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
    public :: collect_contract, la
@@ -90,7 +88,8 @@ contains
                   new_unittest("2. every contraction of the inventory against loops", test_inventory), &
                   new_unittest("3. which plans need scratch", test_plans), &
                   new_unittest("4. empty extents and NaN beta", test_edges), &
-                  new_unittest("5. refusals", test_refusals) &
+                  new_unittest("5. refusals", test_refusals), &
+                  new_unittest("6. refusals of apply", test_apply_refusals) &
                   ]
    end subroutine collect_contract
 
@@ -250,7 +249,9 @@ contains
          before(i) = value_at(9, i)
       end do
       c = ieee_value(0.0_dp, ieee_quiet_nan)
+      ! NaN where `apply` may write, so that reading scratch it has not written shows; SENTINEL past it
       work = SENTINEL
+      work(1:nw) = ieee_value(0.0_dp, ieee_quiet_nan)
 
       expected = 0.0_dp
       combinations = product(extent(1:len(letters)))
@@ -269,10 +270,13 @@ contains
          call plan%apply(la, a, b, c, work)
       end if
       !$acc update self(c)
-      call check(error, all(c == expected), "contraction "//spec)
+      call check(error, .not. plan%status%has_error() .and. all(c == expected), "contraction "//spec)
       if (.not. allocated(error)) then
          c = before
          !$acc update device(c)
+         !$acc update self(work)
+         work(1:nw) = ieee_value(0.0_dp, ieee_quiet_nan)
+         !$acc update device(work)
          call plan%apply(la, a, b, c, work, alpha=2.0_dp, beta=-3.0_dp)
          !$acc update self(c, work)
          call check(error, all(c == 2.0_dp*expected - 3.0_dp*before), "alpha/beta contraction "//spec)
@@ -507,8 +511,10 @@ contains
       type(error_t) :: status
       real(dp) :: source(6), destination(6)
       integer :: i
-      character(len=16), parameter :: BAD(8) = [character(len=16) :: "ab,ab->ab", "ab,bc->a", "aa,ab->b", "ab,ab->", &
-                                                "abcde,e->abcd", "ab,bc->ac,d", "ab;bc->ac", "a1,1c->ac"]
+      ! the last six: a blank in front and on each side of the comma and the arrow, and a letter in the other case
+      character(len=16), parameter :: BAD(14) = [character(len=16) :: "ab,ab->ab", "ab,bc->a", "aa,ab->b", "ab,ab->", &
+                                                 "abcde,e->abcd", "ab,bc->ac,d", "ab;bc->ac", "a1,1c->ac", " ab,bc->ac", &
+                                                 "ab ,bc->ac", "ab, bc->ac", "ab,bc ->ac", "ab,bc-> ac", "aB,bc->ac"]
 
       do i = 1, size(BAD)
          call expect_refusal(trim(BAD(i)), [2, 2], [2, 2], error)
@@ -543,6 +549,21 @@ contains
       end if
       if (.not. allocated(error)) then
          call status%clear()
+         call contract_permute("aB->ba", [2, 3], source, destination, status)
+         call check(error, status%has_error(), "the other case is another letter")
+      end if
+      if (.not. allocated(error)) then
+         call status%clear()
+         call contract_permute("a b->b a", [2, 3, 1], source, destination, status)
+         call check(error, status%has_error(), "a blank is no index")
+      end if
+      if (.not. allocated(error)) then
+         call status%clear()
+         call contract_permute("a1->1a", [2, 3], source, destination, status)
+         call check(error, status%has_error(), "a digit is no index")
+      end if
+      if (.not. allocated(error)) then
+         call status%clear()
          call contract_permute("ab->ba", [2, 3, 1], source, destination, status)
          call check(error, status%has_error(), "the rank must be the extents'")
       end if
@@ -555,6 +576,67 @@ contains
       !$acc exit data delete(source, destination)
       if (.not. allocated(error)) call check(error, all(destination == 7.0_dp), "a refusal writes nothing")
    end subroutine test_refusals
+
+   subroutine expect_untouched(plan, c, message, error)
+      !! `apply` refused: `plan%status` says why and C, 7 on host and device before, is still 7
+      type(trc_contract_plan_t), intent(in) :: plan
+      real(dp), intent(inout) :: c(:)
+      character(len=*), intent(in) :: message
+      type(error_type), allocatable, intent(out) :: error
+
+      !$acc update self(c)
+      call check(error, plan%status%get_code() == ERROR_VALIDATION .and. &
+                 index(plan%status%get_message(), message) > 0, "refusal: "//message)
+      if (allocated(error)) return
+      call check(error, all(c == 7.0_dp), "a refused apply writes nothing: "//message)
+   end subroutine expect_untouched
+
+   subroutine test_apply_refusals(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_contract_plan_t) :: plan
+      type(error_t) :: status
+      real(dp) :: a(6), b(20), c(120), work(120)
+
+      a = 1.0_dp
+      b = 1.0_dp
+      c = 7.0_dp
+      work = 0.0_dp
+      !$acc enter data copyin(a, b, c, work)
+      body: block
+         ! never built
+         call plan%apply(la, a, b, c, work)
+         call expect_untouched(plan, c, "not built", error)
+         if (allocated(error)) exit body
+
+         ! an outer product that needs C once: 120 doubles
+         call plan%build("ia,jb->ijab", [2, 3], [4, 5], status)
+         call check(error, plan%ready .and. plan%work_size == 120 .and. .not. plan%status%has_error(), &
+                    "the plan, and `build` clears the status")
+         if (allocated(error)) exit body
+         call plan%apply(la, a, b, c, work(1:119), beta=1.0_dp)
+         call expect_untouched(plan, c, "shorter than work_size", error)
+         if (allocated(error)) exit body
+         call plan%apply(la, a, b, c, work(1:0))
+         call expect_untouched(plan, c, "shorter than work_size", error)
+         if (allocated(error)) exit body
+
+         ! a good call clears the refusal
+         call plan%apply(la, a, b, c, work)
+         !$acc update self(c)
+         call check(error, .not. plan%status%has_error() .and. all(c == 1.0_dp), "the next apply runs")
+         if (allocated(error)) exit body
+
+         ! a failed build leaves a plan that was ready not ready
+         c = 7.0_dp
+         !$acc update device(c)
+         call plan%build("ia,jb->ij", [2, 3], [4, 5], status)
+         call check(error, status%has_error(), "the build is refused")
+         if (allocated(error)) exit body
+         call plan%apply(la, a, b, c, work)
+         call expect_untouched(plan, c, "not built", error)
+      end block body
+      !$acc exit data delete(a, b, c, work)
+   end subroutine test_apply_refusals
 
 end module check_contract_suite
 

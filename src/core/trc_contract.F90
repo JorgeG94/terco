@@ -1,72 +1,86 @@
-!
-! Pairwise contraction of tensors of up to four indices: permute, then GEMM.
-!
-! WHY. The RI-CCSD Lambda equations and densities, written without any o v^3
-! or v^4 array, are about 180 distinct pairwise contractions of tensors of at
-! most four indices. Taken in the stored index orders, some 110 of them need an
-! operand or the result reordered before a GEMM can read it, between them in 19
-! of the 23 reorderings of four indices. A kernel per order and the m, n, k and
-! leading dimensions of every call written by hand is more code, and more
-! places to confuse two dimensions, than one plan that derives them from the
-! index letters.
-!
-! WHAT. A contraction is spelled as an einsum, "abcd,ed->abce", arrays stored
-! with the first index fastest. Every letter appears in exactly two of the
-! three tensors: no Hadamard index, no index summed within one tensor, no
-! repeated letter, no scalar result (the equations need none of these apart
-! from two traces, which their callers loop over).
-!
-!     type(trc_contract_plan_t) :: plan
-!     call plan%build("ijcd,kd->ijck", shape(l2), shape(t1), error)
-!     ! work: contiguous, at least plan%work_size doubles (none when that is 0), present on the device
-!     call plan%apply(la, l2, t1, out, work, alpha, beta)
-!
-!     C = alpha contraction(A, B) + beta C
-!
-! alpha and beta as in BLAS: C is not read when beta = 0, and a NaN beta gives NaN on every path.
-! An extent may be 0 (an empty virtual space): with C empty `apply` does nothing, with only the
-! contracted index empty it leaves C = beta C. A tensor above 2^31-1 elements is refused.
-!
-! HOW. `build` picks, among the layouts a GEMM can read, the one that reorders
-! the fewest elements:
-!
-!   - the contracted letters in A's order or in B's, the free letters of each
-!     operand in the order they have in the operand or in C;
-!   - A's or B's free letters first in C (swapping the GEMM's operands);
-!   - if C's last letter is also the last letter of one operand, a strided
-!     batched GEMM over it, the other operand shared by every item. This is
-!     what keeps the factors b(c,d,P) in place when d is contracted against
-!     t(k,d): a reordered copy of v^2 naux doubles costs more than the GEMMs
-!     it feeds when the other side is only o wide.
-!
-! A BATCH ONLY FOR CHEAP GEMMS. The items of a batch are smaller than the one
-! GEMM they replace and cuBLAS runs them slower, so the batch is taken only
-! while the GEMM does at most BATCH_FLOPS_PER_ELEMENT flops per element it
-! saves from being reordered. Measured on one V100, o = 20, v = 200,
-! naux = 700, batched against reordered, over the 28 contractions where the
-! question arises: with 40 flops per saved element the batch took 0.66 ms
-! against 2.8 ms (t(k,c) b(b,c,P)); with 8000 it took 78 ms against 20 ms
-! (an o^3 v^3 ring in 200 items, 1.7 TFLOP/s against 7); every loss seen
-! was above 1000.
-!
-! AND NEVER AT ANY MEMORY PRICE. The copy that speed asks for may be a whole factor, v^2 naux
-! doubles. The reordered layout is taken only while it needs at most EXTRA_WORK_LIMIT (2^26
-! doubles, 512 MiB) more scratch than the batch; above that the batch is taken whatever its speed.
-! A plan's `extra_work_limit`, set before `build`, replaces the bound: 0 asks for the least scratch.
-! (A component, not an optional argument of `build`: nvfortran 26.9 -O3 read the absent int64 dummy
-! of "limit = DEFAULT; if (present(x)) limit = x" and segfaulted.)
-!
-! Each array that still does not fit is reordered by one kernel into the
-! caller's work array (A, then B, then C's GEMM result, which is then
-! reordered into C). Nothing is allocated here.
-!
-! RESIDENCY. A, B, C and the work array must be present on the device, as for
-! trc_linalg. None of them may overlap C or the work array.
-!
 module trc_contract
+   !!
+   !! Pairwise contraction of tensors of up to four indices: permute, then GEMM.
+   !!
+   !! WHY. The RI-CCSD Lambda equations and densities, written without any o v^3
+   !! or v^4 array, are about 180 pairwise contractions of tensors of at most four
+   !! indices (a numpy prototype: 183 steps, 118 distinct index patterns). Taken in
+   !! the stored index orders with one GEMM each, 111 of them need an operand or the
+   !! result reordered first, in 24 distinct permutations: 19 of the 23 reorderings
+   !! of four indices, 4 of the 5 of three and the swap of two. A kernel per order
+   !! and the m, n, k and leading dimensions of every call written by hand is more
+   !! code, and more places to confuse two dimensions, than one plan that derives
+   !! them from the index letters.
+   !!
+   !! WHAT. A contraction is spelled as an einsum, "abcd,ed->abce", arrays stored
+   !! with the first index fastest. Every letter appears in exactly two of the
+   !! three tensors: no Hadamard index, no index summed within one tensor, no
+   !! repeated letter, no scalar result (the equations need none of these apart
+   !! from two traces, which their callers loop over).
+   !!
+   !! An index is one letter, a-z or A-Z, and case matters: "p" and "P" are two
+   !! indices. Trailing blanks are ignored; a blank anywhere else is refused, as is
+   !! any other character. The same holds for the spec of `contract_permute`.
+   !!
+   !!     type(trc_contract_plan_t) :: plan
+   !!     call plan%build("ijcd,kd->ijck", shape(l2), shape(t1), error)
+   !!     ! work: contiguous, at least plan%work_size doubles (none when that is 0), present on the device
+   !!     call plan%apply(la, l2, t1, out, work, alpha, beta)
+   !!
+   !!     C = alpha contraction(A, B) + beta C
+   !!
+   !! alpha and beta as in BLAS: C is not read when beta = 0, and a NaN beta gives NaN on every path.
+   !! An extent may be 0 (an empty virtual space): with C empty `apply` does nothing, with only the
+   !! contracted index empty it leaves C = beta C. A tensor above 2^31-1 elements is refused.
+   !!
+   !! REFUSALS. `build` and `contract_permute` set their `error` argument. `apply` of a plan that is
+   !! not built, or with a `work` shorter than `work_size`, writes nothing and sets `plan%status`,
+   !! which every `apply` clears first: check it after the call. (A component: `apply` is at the
+   !! eight-argument limit.)
+   !!
+   !! HOW. `build` picks, among the layouts a GEMM can read, the one that reorders
+   !! the fewest elements:
+   !!
+   !!   - the contracted letters in A's order or in B's, the free letters of each
+   !!     operand in the order they have in the operand or in C;
+   !!   - A's or B's free letters first in C (swapping the GEMM's operands);
+   !!   - if C's last letter is also the last letter of one operand, a strided
+   !!     batched GEMM over it, the other operand shared by every item. This is
+   !!     what keeps the factors b(c,d,P) in place when d is contracted against
+   !!     t(k,d): a reordered copy of v^2 naux doubles costs more than the GEMMs
+   !!     it feeds when the other side is only o wide.
+   !!
+   !! A BATCH ONLY FOR CHEAP GEMMS. The items of a batch are smaller than the one
+   !! GEMM they replace and cuBLAS runs them slower, so the batch is taken only
+   !! while the GEMM does at most BATCH_FLOPS_PER_ELEMENT flops per element it
+   !! saves from being reordered. Measured on one V100, o = 20, v = 200,
+   !! naux = 700, batched against reordered, over the 28 contractions where the
+   !! question arises: with 40 flops per saved element the batch took 0.66 ms
+   !! against 2.8 ms (t(k,c) b(b,c,P)); with 8000 it took 78 ms against 20 ms
+   !! (an o^3 v^3 ring in 200 items, 1.7 TFLOP/s against 7); every loss seen
+   !! was above 1000.
+   !!
+   !! 500 is a value picked between those two, not a measured crossover: nothing was
+   !! measured there, and it is untuned on any other GPU or size. A GPU with other
+   !! GEMM rates (the FP64 tensor cores of an A100 or H100, say) can have its
+   !! crossover elsewhere. Only which layout is chosen depends on it, not the result.
+   !!
+   !! AND NEVER AT ANY MEMORY PRICE. The copy that speed asks for may be a whole factor, v^2 naux
+   !! doubles. The reordered layout is taken only while it needs at most EXTRA_WORK_LIMIT (2^26
+   !! doubles, 512 MiB) more scratch than the batch; above that the batch is taken whatever its speed.
+   !! A plan's `extra_work_limit`, set before `build`, replaces the bound: 0 asks for the least scratch.
+   !! (A component, not an optional argument of `build`: nvfortran 26.9 -O3 read the absent int64 dummy
+   !! of "limit = DEFAULT; if (present(x)) limit = x" and segfaulted.)
+   !!
+   !! Each array that still does not fit is reordered by one kernel into the
+   !! caller's work array (A, then B, then C's GEMM result, which is then
+   !! reordered into C). Nothing is allocated here.
+   !!
+   !! RESIDENCY. A, B, C and the work array must be present on the device, as for
+   !! trc_linalg. None of them may overlap C or the work array.
+   !!
    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp, int64
-   use pic_strings, only: to_string
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -76,6 +90,7 @@ module trc_contract
    public :: contract_permute
 
    integer, parameter :: MAX_RANK = 4
+   character(len=*), parameter :: LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"  !! index names
    integer(int64), parameter :: BATCH_FLOPS_PER_ELEMENT = 500  !! module header, A BATCH ONLY FOR CHEAP GEMMS
    integer(int64), parameter :: EXTRA_WORK_LIMIT = 2_int64**26  !! doubles; module header, AND NEVER AT ANY MEMORY PRICE
 
@@ -108,6 +123,7 @@ module trc_contract
 
    type :: trc_contract_plan_t
       !! One contraction at one set of extents: plain values, no device data. Built by `build`, run by `apply`.
+      type(error_t) :: status  !! `apply`'s refusal, cleared by every `apply` and `build`
       logical :: ready = .false.
       integer(int64) :: extra_work_limit = EXTRA_WORK_LIMIT
          !! set before `build`: the most scratch, in doubles, a faster layout may cost over a batched one
@@ -143,6 +159,7 @@ contains
       character(len=MAX_RANK*2) :: names
       integer(int64) :: elements(3)
 
+      call this%status%clear()
       this%ready = .false.
       this%work_size = 0
       this%reorders_a = .false.
@@ -220,9 +237,9 @@ contains
 
    subroutine plan_apply(this, la, a, b, c, work, alpha, beta)
       !! C = alpha contraction(A, B) + beta C; alpha and beta default to 1 and 0. `work` holds at least
-      !! `this%work_size` doubles, and may be empty when that is 0; a shorter one stops the program.
-      !! `la` is initialised.
-      class(trc_contract_plan_t), intent(in) :: this
+      !! `this%work_size` doubles, and may be empty when that is 0. `la` is initialised. A plan that is not
+      !! built, or a shorter `work`, sets `this%status` and writes nothing.
+      class(trc_contract_plan_t), intent(inout) :: this
       class(trc_linalg_t), intent(in) :: la
       real(dp), intent(in) :: a(*), b(*)
       real(dp), intent(inout) :: c(*)
@@ -230,8 +247,15 @@ contains
       real(dp), intent(in), optional :: alpha, beta
       real(dp) :: al, be
 
-      if (.not. this%ready) error stop "trc_contract: apply of a plan that was not built"
-      if (size(work, kind=int64) < this%work_size) error stop "trc_contract: apply: work is shorter than work_size"
+      call this%status%clear()
+      if (.not. this%ready) then
+         call this%status%set(ERROR_VALIDATION, "trc_contract: apply of a plan that was not built")
+         return
+      end if
+      if (size(work, kind=int64) < this%work_size) then
+         call this%status%set(ERROR_VALIDATION, "trc_contract: apply: work is shorter than work_size")
+         return
+      end if
       al = 1.0_dp
       if (present(alpha)) al = alpha
       be = 0.0_dp
@@ -352,6 +376,7 @@ contains
       rank = size(extent)
       valid = arrow == rank + 1 .and. rank >= 1 .and. rank <= MAX_RANK .and. len_trim(spec) == 2*rank + 2
       if (valid) then
+         valid = verify(spec(1:rank), LETTERS) == 0
          do i = 1, rank
             valid = valid .and. count_of(spec(1:rank), spec(i:i)) == 1 &
                     .and. count_of(spec(arrow + 2:arrow + 1 + rank), spec(i:i)) == 1
@@ -505,6 +530,8 @@ contains
       arrow = index(spec, "->")
       last = len_trim(spec)
       if (comma < 2 .or. arrow < comma + 2 .or. last < arrow + 2) return
+      ! the letters check below would not see a blank before the comma or the arrow: the trims drop it
+      if (index(spec(1:last), " ") /= 0) return
       if (comma - 1 > MAX_RANK .or. arrow - comma - 1 > MAX_RANK .or. last - arrow - 1 > MAX_RANK) return
       given%a = spec(1:comma - 1)
       given%b = spec(comma + 1:arrow - 1)
@@ -512,7 +539,7 @@ contains
       every = trim(given%a)//trim(given%b)//trim(given%c)
       do i = 1, len_trim(every)
          associate (x => every(i:i))
-            if (verify(x, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") /= 0) return
+            if (verify(x, LETTERS) /= 0) return
             if (count_of(given%a, x) > 1 .or. count_of(given%b, x) > 1 .or. count_of(given%c, x) > 1) return
             if (count_of(every, x) /= 2) return
          end associate
