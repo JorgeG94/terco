@@ -18,8 +18,9 @@
 !
 ! It also carries the few OpenACC runtime queries terco makes under
 ! TRC_DEVICE (the free device memory a budget is cut from, and the device a
-! rank binds to), under their OpenACC names and on the OpenMP and HIP
-! runtimes, so each `use openacc` site needs only a `use trc_hip` beside it.
+! rank binds to), on the OpenMP and HIP runtimes: hip_get_property is
+! acc_get_property and so on, so each `use openacc` site has a `use trc_hip`
+! beside it that renames them back (`acc_get_property => hip_get_property`).
 ! The HIP build defines TRC_DEVICE too: it selects the device algorithms (the
 ! `do concurrent` scatters with atomics) over the serial host loops, which
 ! under OpenMP offload would run on the host over device-mapped arrays.
@@ -44,8 +45,8 @@ module trc_hip
    public :: hipsolverDgetrf_bufferSize, hipsolverDgetrf
    public :: hipsolverDgetrs_bufferSize, hipsolverDgetrs
    public :: hipDeviceSynchronize, hipMemGetInfo, hipSetDevice
-   public :: acc_get_property, acc_get_device_num, acc_get_device_type
-   public :: acc_set_device_num, acc_get_num_devices
+   public :: hip_get_property, hip_get_device_num, hip_get_device_type
+   public :: hip_set_device_num, hip_get_num_devices
 
    ! The OpenACC names' stand-ins: one device type, one property.
    integer, parameter, public :: acc_device_nvidia = 4
@@ -287,26 +288,26 @@ module trc_hip
 #ifdef TERCO_HIP
 contains
 
-   integer function acc_get_device_type() result(t)
+   integer function hip_get_device_type() result(t)
       !! The one device type this build knows.
       t = acc_device_nvidia
-   end function acc_get_device_type
+   end function hip_get_device_type
 
-   integer function acc_get_device_num(devtype) result(dev)
+   integer function hip_get_device_num(devtype) result(dev)
       !! The device the OpenMP target regions go to.
       integer, intent(in) :: devtype
       dev = omp_get_default_device()
       if (devtype /= acc_device_nvidia) dev = -1
-   end function acc_get_device_num
+   end function hip_get_device_num
 
-   integer function acc_get_num_devices(devtype) result(n)
+   integer function hip_get_num_devices(devtype) result(n)
       !! The devices OpenMP can offload to.
       integer, intent(in) :: devtype
       n = omp_get_num_devices()
       if (devtype /= acc_device_nvidia) n = 0
-   end function acc_get_num_devices
+   end function hip_get_num_devices
 
-   subroutine acc_set_device_num(dev, devtype)
+   subroutine hip_set_device_num(dev, devtype)
       !! Bind OpenMP's default device and the HIP runtime's current device
       !! together: hipBLAS/hipSOLVER handles and hipMemGetInfo follow HIP's.
       integer, intent(in) :: dev, devtype
@@ -315,9 +316,9 @@ contains
       call omp_set_default_device(dev)
       st = hipSetDevice(int(dev, c_int))
       if (st /= 0) error stop "trc_hip: hipSetDevice failed"
-   end subroutine acc_set_device_num
+   end subroutine hip_set_device_num
 
-   integer(c_size_t) function acc_get_property(dev, devtype, prop) result(v)
+   integer(c_size_t) function hip_get_property(dev, devtype, prop) result(v)
       !! The free memory of the current device, in bytes; 0 for anything else
       !! (what OpenACC returns for a property it does not have).
       integer, intent(in) :: dev, devtype, prop
@@ -328,7 +329,7 @@ contains
       if (dev /= omp_get_default_device()) return
       st = hipMemGetInfo(free, total)
       if (st == 0) v = free
-   end function acc_get_property
+   end function hip_get_property
 #endif
 
 end module trc_hip

@@ -35,7 +35,12 @@ contains
       !! device chosen, -1 on a host build.
       !!
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+      use trc_hip, only: acc_set_device_num => hip_set_device_num, &
+                         acc_get_num_devices => hip_get_num_devices, acc_device_nvidia
+#else
       use openacc, only: acc_set_device_num, acc_get_num_devices, acc_device_nvidia
+#endif
 #endif
       integer, intent(in) :: rank
       integer :: dev

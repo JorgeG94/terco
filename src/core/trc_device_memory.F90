@@ -39,7 +39,12 @@ contains
       !! The free device memory now; -1 on the host build or when the query gives nothing (no device to fit).
       !! The test hook's cap when one is set.
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+      use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                         acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
+#endif
 #endif
       integer(int64) :: bytes
 

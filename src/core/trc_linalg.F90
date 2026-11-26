@@ -27,7 +27,12 @@ module trc_linalg
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm, pic_dot
    use pic_lapack_interfaces, only: pic_syev
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+   use, intrinsic :: iso_c_binding, only: c_ptr, c_null_ptr, c_associated, c_loc
+   use omp_lib, only: omp_target_alloc, omp_target_free, omp_target_memcpy, &
+                      omp_get_default_device, omp_get_initial_device
+   use trc_hip
+#elif defined(TRC_DEVICE)
    use cublas
    use cusolverdn
    use openacc, only: acc_get_cuda_stream, acc_async_sync
@@ -39,6 +44,18 @@ module trc_linalg
    public :: trc_gemm_batch_t
    public :: trc_gemm_batch
    public :: trc_release_local_mem_reservation
+
+#ifdef TERCO_HIP
+   ! The solvers' workspace and info, in device memory from omp_target_alloc
+   ! (see trc_hip: rocSOLVER memsets its workspace, and hipMemset refuses the
+   ! host address use_device_addr gives under unified shared memory). Shared
+   ! by every trc_linalg_t, grown on need, freed with the last one's handles.
+   ! Not `dwork`: that one is a mapped Fortran array the Fock build borrows.
+   type(c_ptr), save :: hip_ws = c_null_ptr
+   integer(int64), save :: hip_ws_n = 0
+   type(c_ptr), save :: hip_info = c_null_ptr
+   integer, save :: hip_users = 0
+#endif
 
    type :: trc_gemm_batch_t
     !! The shape and layout of `count` GEMMs of one shape, item i of A
@@ -73,7 +90,11 @@ module trc_linalg
       !! enough of it (`reserve`): device-resident, contents undefined
       !! across calls. Both builds have it, so a borrower's code is the
       !! same in each; the host build's own eigensolver never reads it.
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      type(c_ptr) :: hb = c_null_ptr
+      type(c_ptr) :: hs = c_null_ptr
+      integer :: devinfo = 0
+#elif defined(TRC_DEVICE)
       type(cublasHandle) :: hb
       type(cusolverDnHandle) :: hs
       integer :: devinfo = 0
@@ -126,6 +147,63 @@ module trc_linalg
 
 contains
 
+#ifdef TERCO_HIP
+   ! hipBLAS and hipSOLVER launch on the default stream and return before
+   ! their kernels finish, while the OpenMP runtime runs its target regions on
+   ! its own streams: nothing orders one against the other. Waiting for the
+   ! device after every library call is the conservative fix, correct before
+   ! it is fast; replace it with a shared stream once the numbers are right.
+   subroutine hip_sync()
+      integer(c_int) :: st
+      st = hipDeviceSynchronize()
+      if (st /= 0) error stop "trc_linalg: hipDeviceSynchronize failed"
+   end subroutine hip_sync
+
+   function hip_workspace(lwork) result(p)
+      !! At least lwork doubles of device workspace, grown (never shrunk) as
+      !! the solves ask.
+      integer, intent(in) :: lwork
+      type(c_ptr) :: p
+      integer(int64) :: need
+      need = max(int(lwork, int64), 1_int64)
+      if (need > hip_ws_n) then
+         if (c_associated(hip_ws)) call omp_target_free(hip_ws, omp_get_default_device())
+         hip_ws = omp_target_alloc(8_int64*need, omp_get_default_device())
+         if (.not. c_associated(hip_ws)) error stop "trc_linalg: omp_target_alloc of the solver workspace failed"
+         hip_ws_n = need
+      end if
+      p = hip_ws
+   end function hip_workspace
+
+   function hip_info_ptr() result(p)
+      !! The solvers' device info int.
+      type(c_ptr) :: p
+      if (.not. c_associated(hip_info)) then
+         hip_info = omp_target_alloc(8_int64, omp_get_default_device())
+         if (.not. c_associated(hip_info)) error stop "trc_linalg: omp_target_alloc of the solver info failed"
+      end if
+      p = hip_info
+   end function hip_info_ptr
+
+   integer function hip_info_value() result(info)
+      !! The last solve's info, copied back to the host (after hip_sync).
+      integer(c_int), target :: h
+      integer(c_int) :: st
+      h = 0
+      st = omp_target_memcpy(c_loc(h), hip_info, 4_c_size_t, 0_c_size_t, 0_c_size_t, &
+                             omp_get_initial_device(), omp_get_default_device())
+      if (st /= 0) error stop "trc_linalg: copying the solver info back failed"
+      info = int(h)
+   end function hip_info_value
+
+   subroutine hip_free_scratch()
+      if (c_associated(hip_ws)) call omp_target_free(hip_ws, omp_get_default_device())
+      if (c_associated(hip_info)) call omp_target_free(hip_info, omp_get_default_device())
+      hip_ws = c_null_ptr
+      hip_info = c_null_ptr
+      hip_ws_n = 0
+   end subroutine hip_free_scratch
+#endif
 
    subroutine linalg_init(this, n)
     !! Handles, and the library streams set to the OpenACC synchronous queue
@@ -149,7 +227,13 @@ contains
       integer :: st
 #endif
       if (.not. this%ready) then
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+         st = hipblasCreate(this%hb)
+         if (st /= 0) error stop "trc_linalg: hipblasCreate failed"
+         st = hipsolverCreate(this%hs)
+         if (st /= 0) error stop "trc_linalg: hipsolverCreate failed"
+         hip_users = hip_users + 1
+#elif defined(TRC_DEVICE)
          st = cublasCreate(this%hb)
          if (st /= 0) error stop "trc_linalg: cublasCreate failed"
          st = cusolverDnCreate(this%hs)
@@ -194,7 +278,10 @@ contains
       !!
     !! GPU synchoronize, TODO(chore): abstract to its own type of procedure this does not belong here
       class(trc_linalg_t), intent(in) :: this
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      if (.not. this%ready) return
+      call hip_sync()
+#elif defined(TRC_DEVICE)
       interface
          function cudaDeviceSynchronize() result(res) bind(c, name="cudaDeviceSynchronize")
             import :: c_int
@@ -213,7 +300,15 @@ contains
    subroutine linalg_release(this)
     !! at the end relrease the handles
       class(trc_linalg_t), intent(inout) :: this
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st
+      if (this%ready) then
+         st = hipblasDestroy(this%hb)
+         st = hipsolverDestroy(this%hs)
+         hip_users = hip_users - 1
+         if (hip_users == 0) call hip_free_scratch()
+      end if
+#elif defined(TRC_DEVICE)
       integer :: st
       if (this%ready) then
          !$acc exit data delete(this%devinfo)
@@ -243,7 +338,18 @@ contains
       logical :: tra, trb
       tra = ta == "T" .or. ta == "t"
       trb = tb == "T" .or. tb == "t"
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      block
+         integer :: st, oa, ob
+         oa = merge(HIP_OP_T, HIP_OP_N, tra)
+         ob = merge(HIP_OP_T, HIP_OP_N, trb)
+         !$omp target data use_device_addr(a, b, c)
+         st = hipblasDgemm(this%hb, oa, ob, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+         !$omp end target data
+         call hip_sync()
+         if (st /= 0) error stop "trc_linalg: hipblasDgemm failed"
+      end block
+#elif defined(TRC_DEVICE)
       block
          integer :: st, oa, ob
          oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
@@ -280,7 +386,15 @@ contains
       integer, intent(in) :: m, n, lda, ldc
       real(dp), intent(in) :: a(lda, *)
       real(dp), intent(inout) :: c(ldc, *)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st
+      ! beta = 0 and B = C, as in the cuBLAS form below.
+      !$omp target data use_device_addr(a, c)
+      st = hipblasDgeam(this%hb, HIP_OP_T, HIP_OP_N, n, m, 1.0_dp, a, lda, 0.0_dp, c, ldc, c, ldc)
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipblasDgeam failed"
+#elif defined(TRC_DEVICE)
       integer :: st
       ! beta = 0: the second operand is not read, but cuBLAS still checks
       ! its leading dimension against C's shape, so it is C itself -- the
@@ -318,7 +432,14 @@ contains
       integer, intent(in) :: n, lds, ldc
       real(dp), intent(in) :: s(lds, *)
       real(dp), intent(inout) :: c(ldc, *)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st
+      !$omp target data use_device_addr(s, c)
+      st = hipblasDgeam(this%hb, HIP_OP_T, HIP_OP_N, n, n, 1.0_dp, s, lds, 1.0_dp, s, lds, c, ldc)
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipblasDgeam failed"
+#elif defined(TRC_DEVICE)
       integer :: st
       !$acc host_data use_device(s, c)
       st = cublasDgeam(this%hb, CUBLAS_OP_T, CUBLAS_OP_N, n, n, 1.0_dp, s, lds, 1.0_dp, s, lds, c, ldc)
@@ -415,7 +536,19 @@ contains
       if (present(alpha)) al = alpha
       be = 0.0_dp
       if (present(beta)) be = beta
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      block
+         integer :: st, oa, ob
+         oa = merge(HIP_OP_T, HIP_OP_N, g%transa == "T" .or. g%transa == "t")
+         ob = merge(HIP_OP_T, HIP_OP_N, g%transb == "T" .or. g%transb == "t")
+         !$omp target data use_device_addr(a, b, c)
+         st = hipblasDgemmStridedBatched(this%hb, oa, ob, g%m, g%n, g%k, al, a, g%lda, g%sa, b, g%ldb, g%sb, &
+                                         be, c, g%ldc, g%sc, g%count)
+         !$omp end target data
+         call hip_sync()
+         if (st /= 0) error stop "trc_linalg: hipblasDgemmStridedBatched failed"
+      end block
+#elif defined(TRC_DEVICE)
       block
          integer :: st, oa, ob
          oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, g%transa == "T" .or. g%transa == "t")
@@ -447,7 +580,17 @@ contains
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, lw, info
+      !$omp target data use_device_addr(a)
+      st = hipsolverDpotrf_bufferSize(this%hs, HIP_FILL_LOWER, n, a, lda, lw)
+      st = hipsolverDpotrf(this%hs, HIP_FILL_LOWER, n, a, lda, hip_workspace(lw), lw, hip_info_ptr())
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipsolverDpotrf failed"
+      info = hip_info_value()
+      if (info /= 0) error stop "trc_linalg: hipsolverDpotrf: matrix not positive definite"
+#elif defined(TRC_DEVICE)
       integer :: st, lw, info
       real(dp), allocatable :: work(:)
       !$acc host_data use_device(a)
@@ -490,7 +633,16 @@ contains
       real(dp), intent(inout) :: a(lda, *)
       integer, intent(out) :: ipiv(*)
       integer, intent(out) :: info   !! 0, or the first zero pivot as LAPACK reports it
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, lw
+      !$omp target data use_device_addr(a, ipiv)
+      st = hipsolverDgetrf_bufferSize(this%hs, n, n, a, lda, lw)
+      if (st == 0) st = hipsolverDgetrf(this%hs, n, n, a, lda, hip_workspace(lw), lw, ipiv, hip_info_ptr())
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipsolverDgetrf failed"
+      info = hip_info_value()
+#elif defined(TRC_DEVICE)
       integer :: st, lw
       real(dp), allocatable :: work(:)
       !$acc host_data use_device(a)
@@ -531,7 +683,18 @@ contains
       real(dp), intent(in) :: a(lda, *)
       integer, intent(in) :: ipiv(*)
       real(dp), intent(inout) :: b(ldb, *)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, ct, lw
+      ct = merge(HIP_OP_T, HIP_OP_N, trans == "T" .or. trans == "t")
+      !$omp target data use_device_addr(a, ipiv, b)
+      st = hipsolverDgetrs_bufferSize(this%hs, ct, n, nrhs, a, lda, ipiv, b, ldb, lw)
+      if (st == 0) st = hipsolverDgetrs(this%hs, ct, n, nrhs, a, lda, ipiv, b, ldb, hip_workspace(lw), lw, &
+                                        hip_info_ptr())
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipsolverDgetrs failed"
+      if (hip_info_value() /= 0) error stop "trc_linalg: hipsolverDgetrs: illegal argument"
+#elif defined(TRC_DEVICE)
       integer :: st, ct
       ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, ipiv, b, this%devinfo)
@@ -565,7 +728,15 @@ contains
       real(dp), intent(in) :: alpha, beta
       real(dp), intent(in) :: a(lda, *), x(*)
       real(dp), intent(inout) :: y(*)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, ct
+      ct = merge(HIP_OP_T, HIP_OP_N, trans == "T" .or. trans == "t")
+      !$omp target data use_device_addr(a, x, y)
+      st = hipblasDgemv(this%hb, ct, m, n, alpha, a, lda, x, 1, beta, y, 1)
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipblasDgemv failed"
+#elif defined(TRC_DEVICE)
       integer :: st, ct
       ct = merge(CUBLAS_OP_T, CUBLAS_OP_N, trans == "T" .or. trans == "t")
       !$acc host_data use_device(a, x, y)
@@ -598,7 +769,17 @@ contains
       real(dp), intent(in) :: alpha
       real(dp), intent(in) :: a(lda, *)
       real(dp), intent(inout) :: b(ldb, *)
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, cs, cu, ct
+      cs = merge(HIP_SIDE_RIGHT, HIP_SIDE_LEFT, side == "R" .or. side == "r")
+      cu = merge(HIP_FILL_UPPER, HIP_FILL_LOWER, uplo == "U" .or. uplo == "u")
+      ct = merge(HIP_OP_T, HIP_OP_N, trans == "T" .or. trans == "t")
+      !$omp target data use_device_addr(a, b)
+      st = hipblasDtrsm(this%hb, cs, cu, ct, HIP_DIAG_NON_UNIT, m, n, alpha, a, lda, b, ldb)
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipblasDtrsm failed"
+#elif defined(TRC_DEVICE)
       integer :: st, cs, cu, ct
       cs = merge(CUBLAS_SIDE_RIGHT, CUBLAS_SIDE_LEFT, side == "R" .or. side == "r")
       cu = merge(CUBLAS_FILL_MODE_UPPER, CUBLAS_FILL_MODE_LOWER, uplo == "U" .or. uplo == "u")
@@ -642,7 +823,27 @@ contains
       real(dp), intent(inout) :: a(lda, *)
       real(dp), intent(out) :: w(*)
       integer, intent(out), optional :: info
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st, devinfo, lwork
+      if (n > this%n) error stop "trc_linalg: eigenproblem larger than init's n"
+      !$omp target data use_device_addr(a, w)
+      st = hipsolverDsyevd_bufferSize(this%hs, HIP_EIG_VECTOR, HIP_FILL_UPPER, n, a, lda, w, lwork)
+      !$omp end target data
+      if (st /= 0) error stop "trc_linalg: hipsolverDsyevd_bufferSize failed"
+      !$omp target data use_device_addr(a, w)
+      st = hipsolverDsyevd(this%hs, HIP_EIG_VECTOR, HIP_FILL_UPPER, n, a, lda, w, hip_workspace(lwork), lwork, &
+                           hip_info_ptr())
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipsolverDsyevd failed"
+      ! Non-convergence is reported through the device int, not the status.
+      devinfo = hip_info_value()
+      if (present(info)) then
+         info = devinfo
+      else if (devinfo /= 0) then
+         error stop "trc_linalg: hipsolverDsyevd did not converge"
+      end if
+#elif defined(TRC_DEVICE)
       integer :: st, devinfo, lwork
       if (n > this%n) error stop "trc_linalg: eigenproblem larger than init's n"
       ! The workspace this n needs (about 4 n^2 doubles at every n), grown
@@ -682,7 +883,14 @@ contains
       integer, intent(in) :: n
       real(dp), intent(in) :: x(*), y(*)
       real(dp) :: r
-#ifdef TRC_DEVICE
+#if defined(TERCO_HIP)
+      integer :: st
+      !$omp target data use_device_addr(x, y)
+      st = hipblasDdot(this%hb, n, x, 1, y, 1, r)
+      !$omp end target data
+      call hip_sync()
+      if (st /= 0) error stop "trc_linalg: hipblasDdot failed"
+#elif defined(TRC_DEVICE)
       integer :: st
       !$acc host_data use_device(x, y)
       st = cublasDdot_v2(this%hb, n, x, 1, y, 1, r)
@@ -856,9 +1064,10 @@ contains
       !! choice has to avoid: regrowing at the worst possible moment, with
       !! almost no free memory left, is a crash instead of a reservation.
       !!
-      !! A no-op on the host build (no device, nothing to reserve).
+      !! A no-op on the host build (no device, nothing to reserve), and on the
+      !! AMD build, which sizes the scratch stack per launch.
       !!
-#ifdef TRC_DEVICE
+#if defined(TRC_DEVICE) && !defined(TERCO_HIP)
       interface
          function cudadevicesetlimit(limit, lim_value) bind(c, name="cudaDeviceSetLimit") result(ierr)
             import :: c_int, c_size_t
