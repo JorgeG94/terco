@@ -211,6 +211,19 @@ set_tests_properties(
   PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
              "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_RCCSD_LADDER_D_CHUNK=1")
 
+# The once-per-solve intermediates of the CCSD Lambda equations (src/post_hf/ccsd/trc_rccsd_lambda_inter.F90) at
+# random amplitudes against host loops with the (ia|bc) formed from the factors, frozen core 1 and 0, forced blocks,
+# the least contraction scratch and the refusals. No reference file. The second entry runs it with the environment's
+# block cap.
+terco_add_check(check_rccsd_lambda_inter check_rccsd_lambda_inter.F90 NEEDS_BASIS)
+target_link_libraries(check_rccsd_lambda_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_lambda_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_lambda_inter_chunked COMMAND check_rccsd_lambda_inter)
+set_tests_properties(
+  terco/check_rccsd_lambda_inter_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_LAMBDA_WOOVO_CHUNK=2")
+
 # The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
 # _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
 # plus an independent host implementation of update_amps and DIIS on a linear problem. Same SKIP guard.
