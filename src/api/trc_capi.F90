@@ -199,7 +199,7 @@ module trc_capi
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t, trc_ecp_without_atoms
-   use trc_ecp_angular, only: ECP_ORB_LMAX
+   use trc_ecp, only: trc_ecp_gradient_refusal
    use trc_ecp_json, only: trc_ecp_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -4868,15 +4868,13 @@ contains
       type(context_box), intent(in) :: cx
       character(len=:), allocatable :: refusal
       refusal = ""
-      ! The ECP term differentiates each orbital shell by raising it one l, so
-      ! the ECP kernels' f ceiling (trc_ecp's ECP_ORB_LMAX) stops it at an f
-      ! function; the energy has no such limit.
+      ! The ECP term has its own ceilings (the derivative raises each shell by
+      ! one l), which the energy does not share.
       if (cx%ecp%has_ecp .and. cx%have_basis) then
          if (cx%bb%b%nshell > 0) then
-            if (maxval(cx%bb%b%sh_l) >= ECP_ORB_LMAX) then
-               refusal = "the analytic gradient of a molecule with an effective core potential "// &
-                         "does not cover f basis functions (the ECP derivative raises each shell by "// &
-                         "one angular momentum, past the ECP kernels' f ceiling)"
+            refusal = trc_ecp_gradient_refusal(cx%bb%b, cx%ecp)
+            if (len(refusal) > 0) then
+               refusal = "the analytic gradient of a molecule with an effective core potential: "//refusal
                return
             end if
          end if
@@ -4888,7 +4886,7 @@ contains
 
    function trc_check_gradient_upfront(handle) result(status)
       !! Whether trc_run_gradient will refuse this context for a reason its
-      !! molecule, basis and ECP settle before any SCF runs (an f basis function
+      !! molecule, basis and ECP settle before any SCF runs (a g basis function
       !! with an ECP attached, l above this build's gradient kernels): TRC_OK
       !! when nothing known up front refuses it, otherwise TRC_ERR_UNSUPPORTED
       !! with the message (trc_message) trc_run_gradient would give. A geometry

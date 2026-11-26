@@ -690,9 +690,9 @@ def gen_ecp_scf():
     dump.unlink()
 
 
-#: gen_ecp_grad's own element table, Te added to _SYMBOL_ECP's (kept apart for
-#: the reason _SYMBOL_ECP is).
-_SYMBOL_ECP_GRAD = {**_SYMBOL_ECP, 52: 'Te'}
+#: gen_ecp_grad's own element table, Te and Ce added to _SYMBOL_ECP's (kept
+#: apart for the reason _SYMBOL_ECP is).
+_SYMBOL_ECP_GRAD = {**_SYMBOL_ECP, 52: 'Te', 58: 'Ce'}
 
 #: gen_ecp_grad's geometries, Bohr: the SAME literals check_ecp_grad.F90's
 #: `geometry` and check_ecp_scf.F90's make_hi carry (no xyz file, so the
@@ -703,7 +703,36 @@ _ECP_GRAD_GEOMETRY = {
     "hi_bond": ([1, 53], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.609 / 0.529177210903]]),
     # Two ECP atoms, off-axis, so the ECP-centre term has to be split between them.
     "hi_dimer": ([1, 53, 1, 53], [[0.1, -0.2, 0.0], [0.3, 0.2, 3.04], [4.6, 1.1, 0.9], [4.9, 4.0, 1.9]]),
+    "ceh": ([58, 1], [[0.2, -0.1, 0.1], [1.9, 1.3, 3.2]]),
+    # CH3I, a little off C3v so no component vanishes by symmetry.
+    "ch3i": ([6, 53, 1, 1, 1], [[0.0, 0.0, 0.0], [0.1, -0.05, 4.05], [1.95, 0.05, -0.65],
+                                [-1.0, 1.70, -0.70], [-0.95, -1.68, -0.68]]),
 }
+
+
+def _ecp_gradient_contraction(mol):
+    """d/dR_A sum_ij d_ij U_ij / (N_i N_j) per atom A, (natm, 3): pyscf's own
+    ECP derivative integrals (ECPscalar_ipnuc, <nabla i|U|j>, and per ECP atom
+    ECPscalar_iprinv, assembled as grad.rhf.hcore_generator does) against the
+    synthetic density d_ij = cos(0.37 (i + j)) / (1 + 0.05 |i - j|) (1-based,
+    pyscf's Cartesian order). N_i = sqrt(S_ii) takes the AO normalisation
+    out, so check_ecp_grad.F90 needs only terco's own overlap diagonal."""
+    nao = mol.nao_nr()
+    k = np.arange(1, nao + 1)
+    dens = np.cos(0.37 * (k[:, None] + k[None, :])) / (1.0 + 0.05 * np.abs(k[:, None] - k[None, :]))
+    n = np.sqrt(np.diag(mol.intor('int1e_ovlp')))
+    dens = dens / np.outer(n, n)
+    ipnuc = mol.intor('ECPscalar_ipnuc', comp=3)
+    ecp_atoms = set(mol._ecpbas[:, gto.ATOM_OF])
+    g = np.zeros((mol.natm, 3))
+    for ia, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+        v = np.zeros((3, nao, nao))
+        if ia in ecp_atoms:
+            with mol.with_rinv_at_nucleus(ia):
+                v += mol.intor('ECPscalar_iprinv', comp=3)
+        v[:, p0:p1] -= ipnuc[:, p0:p1]
+        g[ia] = np.einsum('xij,ij->x', v + v.transpose(0, 2, 1), dens)
+    return g
 
 
 def gen_ecp_grad():
@@ -711,26 +740,32 @@ def gen_ecp_grad():
     (def2-SVP, the ECP read from the same BSE JSON as the matrix and SCF
     references, `bse_json_ecp`) at the geometries above: RHF, spherical and
     Cartesian; RHF of an HI dimer (two ECP atoms); UHF of the HI cation; and
-    RI-MP2 of HI (def2-SVP-RIFIT, no frozen core, as the test sets it). No
-    terco binary is needed: the geometries are literals. Each G_* is the
-    (3, natm) gradient, Eh/Bohr; RHF and UHF are pyscf's analytic ones.
-    pyscf has no analytic DF-MP2 gradient, so G_hi_mp2 is a five-point
-    difference (step 2e-3 Bohr; 4e-3 gives the same to 1e-8) of pyscf's
-    RHF + DF-MP2 energy."""
+    RI-MP2 of HI (def2-SVP-RIFIT, no frozen core, as the test sets it). The
+    same RHF, UHF and RI-MP2 for HI in def2-TZVP (f functions, so g bra in
+    the ECP derivative) and RHF of CH3I in def2-TZVP; and G_fint_*, the ECP
+    term alone on a synthetic density over ecp-f-test.json's f shells
+    (`_ecp_gradient_contraction`, Cartesian). No terco binary is needed: the
+    geometries are literals. Each G_* is the (3, natm) gradient, Eh/Bohr; RHF
+    and UHF are pyscf's analytic ones. pyscf has no analytic DF-MP2 gradient,
+    so G_*_mp2 is a five-point difference (step 2e-3 Bohr; 4e-3 gives the
+    same to 1e-8) of pyscf's RHF + DF-MP2 energy."""
     w = RefWriter("ecp_grad.ref")
     jf = HERE.parent / "basis_sets" / "def2-svp.json"
     aux_jf = HERE.parent / "basis_sets" / "def2-svp-rifit.json"
+    tz_jf = ROOT / "basis_sets" / "def2-tzvp.json"
+    f_jf = HERE.parent / "basis_sets" / "ecp-f-test.json"
     w.header("check_ecp_grad",
-             [ROOT / "test" / "check_ecp_grad.F90", ROOT / "test" / "check_ecp_scf.F90", jf, aux_jf])
+             [ROOT / "test" / "check_ecp_grad.F90", ROOT / "test" / "check_ecp_scf.F90", jf, aux_jf, tz_jf, f_jf])
 
-    def molecule(name, cart=False, charge=0, spin=0, r=None):
+    def molecule(name, cart=False, charge=0, spin=0, r=None, basis=jf):
         z, r0 = _ECP_GRAD_GEOMETRY[name]
         labels = [f"{_SYMBOL_ECP_GRAD[x]}{i + 1}" for i, x in enumerate(z)]
         elements = dict(zip(labels, z))
         atoms = [(lab, tuple(c)) for lab, c in zip(labels, r0 if r is None else r)]
-        mol = gto.M(atom=atoms, basis=bse_json_basis(jf, elements), ecp=bse_json_ecp(jf, elements),
+        mol = gto.M(atom=atoms, basis=bse_json_basis(basis, elements), ecp=bse_json_ecp(basis, elements),
                     unit='Bohr', cart=cart, charge=charge, spin=spin, verbose=0)
-        return mol, bse_json_basis(aux_jf, elements)
+        # No auxiliary file entry for Ce, whose case is integrals only.
+        return mol, None if 58 in z else bse_json_basis(aux_jf, elements)
 
     def analytic(tag, mol, make_mf):
         mf, grad_norm = converge_tight(lambda: make_mf(mol), None, f"ecp_grad {tag}")
@@ -744,8 +779,17 @@ def gen_ecp_grad():
     analytic("hi_dimer_sph", molecule("hi_dimer")[0], scf.RHF)
     analytic("hi_uhf", molecule("hi", charge=1, spin=1)[0], scf.UHF)
 
-    def mp2_energy(r):
-        mol, aux = molecule("hi", r=r)
+    # f functions.
+    analytic("hi_tz", molecule("hi", basis=tz_jf)[0], scf.RHF)
+    analytic("hi_tz_uhf", molecule("hi", charge=1, spin=1, basis=tz_jf)[0], scf.UHF)
+    analytic("ch3i_tz", molecule("ch3i", basis=tz_jf)[0], scf.RHF)
+    for name in ("hi", "ceh"):
+        # CeH: an odd electron count, which the integrals do not read.
+        mol = molecule(name, cart=True, spin=None, basis=f_jf)[0]
+        w.matrix(f"G_fint_{name}", _ecp_gradient_contraction(mol).T)
+
+    def mp2_energy(r, basis):
+        mol, aux = molecule("hi", r=r, basis=basis)
         mf, _ = converge_tight(lambda: scf.RHF(mol), None, "ecp_grad hi_mp2", conv_tol=1.0e-13, conv_tol_grad=1.0e-9)
         pt = mp.dfmp2.DFMP2(mf)
         pt.with_df = df.DF(mol, auxbasis=aux)
@@ -755,19 +799,20 @@ def gen_ecp_grad():
 
     r0 = np.array(_ECP_GRAD_GEOMETRY["hi"][1])
     h = 2.0e-3
-    g = np.zeros((len(r0), 3))
-    for a in range(len(r0)):
-        for c in range(3):
-            e = {}
-            for k in (1, -1, 2, -2):
-                r = r0.copy()
-                r[a, c] += k * h
-                e[k] = mp2_energy(r)
-            g[a, c] = (8.0 * (e[1] - e[-1]) - (e[2] - e[-2])) / (12.0 * h)
-    e0 = mp2_energy(r0)
-    w.real("E_hi_mp2", e0)
-    w.matrix("G_hi_mp2", g.T)
-    print(f"  ecp_grad hi_mp2        : E = {e0:18.12f}  |sum g| {np.abs(g.sum(0)).max():.2e}")
+    for tag, basis in (("hi_mp2", jf), ("hi_tz_mp2", tz_jf)):
+        g = np.zeros((len(r0), 3))
+        for a in range(len(r0)):
+            for c in range(3):
+                e = {}
+                for k in (1, -1, 2, -2):
+                    r = r0.copy()
+                    r[a, c] += k * h
+                    e[k] = mp2_energy(r, basis)
+                g[a, c] = (8.0 * (e[1] - e[-1]) - (e[2] - e[-2])) / (12.0 * h)
+        e0 = mp2_energy(r0, basis)
+        w.real(f"E_{tag}", e0)
+        w.matrix(f"G_{tag}", g.T)
+        print(f"  ecp_grad {tag:14s}: E = {e0:18.12f}  |sum g| {np.abs(g.sum(0)).max():.2e}")
     w.end()
     w.write()
 

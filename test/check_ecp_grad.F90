@@ -21,10 +21,21 @@ module check_ecp_grad_suite
    !!      against the density contracted with `trc_ecp_deriv_cart` (the
    !!      dense, one-atom-a-time reference, a different derivative basis), and
    !!      the refusal when the device cannot hold one atom's caches.
+   !!      f FUNCTIONS, whose derivative is a g bra with kernels of its own
+   !!      (trc_ecp_gbra): on pyscf_refs' ecp-f-test.json (a few f shells over
+   !!      the I and Ce ECPs; Ce's reaches a projected l = 4, the largest the
+   !!      angular tables take with a g bra) the ECP term on a synthetic
+   !!      density against pyscf's own derivative integrals and, along one
+   !!      direction, against the difference of this build's ECP matrix; screened against unscreened
+   !!      and chunked against whole as above; and what is still refused (g
+   !!      and higher functions, an h projector with f). These run in every
+   !!      build: the ECP kernels do not depend on TERCO_LMAX.
    !!   2. Whole gradients against pyscf 2.14 (the same BSE-JSON basis and ECP,
    !!      tight SCF), read from pyscf_refs/ecp_grad.ref: RHF of HI and TeH2
    !!      (spherical and Cartesian) and of the HI dimer, UHF of the HI cation,
-   !!      RI-MP2 of HI (pyscf's side a difference of its DF-MP2 energy).
+   !!      RI-MP2 of HI (pyscf's side a difference of its DF-MP2 energy); and,
+   !!      from TERCO_LMAX = 3 (skipped below), RHF, UHF and RI-MP2 of HI and
+   !!      RHF of CH3I in def2-TZVP, which has f functions.
    !!   3. The whole gradient through the C API, at the same two molecules in
    !!      def2-SVP's own spherical functions:
    !!      `trc_run_gradient` for RHF, UHF, RKS/PBE and RI-MP2 against a central
@@ -38,12 +49,15 @@ module check_ecp_grad_suite
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_basis_types, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t
    use trc_ecp_json, only: trc_ecp_from_json
-   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart, trc_ecp_gradient, trc_ecp_screen_stats_t
+   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart, trc_ecp_gradient, trc_ecp_gradient_refusal, &
+                      trc_ecp_screen_stats_t
+   use trc_cart_perm, only: cart_perm_b2l
+   use trc_ecp_angular, only: CART_POW_Y, CART_POW_Z
    use trc_device_memory, only: device_memory_set_cap
    use trc_error, only: error_t
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
@@ -70,16 +84,22 @@ module check_ecp_grad_suite
    end interface
 
    character(len=*), parameter :: DEF2_SVP = 'basis_sets/def2-svp.json'
+   character(len=*), parameter :: DEF2_TZVP = '../basis_sets/def2-tzvp.json'
+   character(len=*), parameter :: F_TEST = 'basis_sets/ecp-f-test.json'
+   logical, parameter :: HAVE_F_KERNELS = TRC_LMAX >= 3
+   !! Whether this build runs an SCF over f functions.
    real(dp), parameter :: INT_TOL = 1.0e-10_dp
    !! The derivative matrix against its five-point difference, absolute: measured 8e-13.
    real(dp), parameter :: CONTRACT_TOL = 1.0e-10_dp
    !! trc_ecp_gradient against the contracted difference of U, Eh/bohr: measured 3e-12.
    real(dp), parameter :: DIRECTION_TOL = 1.0e-8_dp
-   !! The dimer's directional derivative, a sum over all twelve components: measured 7e-11 (gfortran), 3e-11 (nvfortran), on a value of 1.2.
+   !! A directional derivative, a sum over every component: measured on the dimer 7e-11 (gfortran), 3e-11 (nvfortran), on a value of 1.2.
    real(dp), parameter :: SCREEN_TOL = 1.0e-12_dp
    !! Screened against unscreened, Eh/bohr: the dropped blocks are below 1e-20.
    real(dp), parameter :: CHUNK_TOL = 1.0e-13_dp
    !! Three chunks against one: the same tasks in the same order, each with its own slot.
+   real(dp), parameter :: FINT_TOL = 1.0e-11_dp
+   !! The ECP term over f shells against pyscf's derivative integrals, Eh/bohr: measured 8e-16.
    real(dp), parameter :: PYSCF_TOL = 1.0e-7_dp
    !! Whole gradients against pyscf_refs/ecp_grad.ref: measured at most 1e-9 (RHF, UHF and RI-MP2).
    real(dp), parameter :: GRAD_TOL_HF = 2.0e-6_dp
@@ -92,13 +112,19 @@ module check_ecp_grad_suite
       !! pyscf_refs/ecp_grad.ref.
       real(dp) :: hi_sph(3, 2), hi_cart(3, 2), teh2_sph(3, 3), teh2_cart(3, 3), hi_bond(3, 2)
       real(dp) :: dimer(3, 4), uhf(3, 2), mp2(3, 2), e_uhf, e_mp2, e_skip
+      ! f functions: HI and CH3I in def2-TZVP, and the ECP term alone over
+      ! ecp-f-test.json.
+      real(dp) :: hi_tz(3, 2), hi_tz_uhf(3, 2), hi_tz_mp2(3, 2), ch3i_tz(3, 5), e_hi_tz_uhf, e_hi_tz_mp2
+      real(dp) :: fint_hi(3, 2), fint_ceh(3, 2)
    end type pyscf_refs_t
 
 contains
 
    subroutine collect_ecp_grad_tests(testsuite)
-      !! No argument: what a pull request runs (about half a minute). `long`: the
-      !! heavier integral and pyscf cases. `fd`: the gradients against energy
+      !! No argument: what a pull request runs (about half a minute). `f`: the
+      !! SCF over f functions, its own pull-request entry (25 s on one CPU
+      !! thread; skipped below TERCO_LMAX = 3). `long`: the heavier integral and
+      !! pyscf cases. `fd`: the gradients against energy
       !! differences, which reconverge about fifty SCFs (minutes). The last two
       !! are registered LONG.
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
@@ -106,20 +132,28 @@ contains
 
       arg = ""
       if (command_argument_count() >= 1) call get_command_argument(1, arg)
-      if (trim(arg) == "fd") then
+      if (trim(arg) == "f") then
+         testsuite = [new_unittest("RHF gradient of HI/def2-TZVP (f functions) vs pyscf", test_f_pyscf)]
+      else if (trim(arg) == "fd") then
          testsuite = [ &
                      new_unittest("RHF gradient of HI vs the energy difference", test_rhf_hi), &
                      new_unittest("RHF gradient of bent TeH2 vs the energy difference", test_rhf_teh2), &
                      new_unittest("RKS/PBE gradient of HI vs the energy difference", test_pbe_hi), &
                      new_unittest("UHF gradient of the HI cation (doublet) vs the energy difference", test_uhf_hi), &
                      new_unittest("RI-MP2 gradient of HI vs the energy difference", test_mp2_hi), &
-                     new_unittest("RI-MP2 gradient of bent TeH2 vs the energy difference", test_mp2_teh2) &
+                     new_unittest("RI-MP2 gradient of bent TeH2 vs the energy difference", test_mp2_teh2), &
+                     new_unittest("RHF gradient of HI/def2-TZVP (f) vs the energy difference", test_rhf_f), &
+                     new_unittest("RKS/PBE gradient of HI/def2-TZVP (f) vs the energy difference", test_pbe_f), &
+                     new_unittest("UHF gradient of HI+/def2-TZVP (f) vs the energy difference", test_uhf_f), &
+                     new_unittest("RI-MP2 gradient of HI/def2-TZVP (f) vs the energy difference", test_mp2_f) &
                      ]
       else if (trim(arg) == "long") then
          testsuite = [ &
                      new_unittest("dU/dR of bent TeH2 vs differences of the ECP matrix", test_ints_teh2), &
                      new_unittest("dU/dR of an HI dimer (two ECP atoms) vs differences of the ECP matrix", test_ints_dimer), &
-                     new_unittest("RHF gradients of HI, Cartesian TeH2 and an HI dimer vs pyscf", test_rhf_pyscf_long) &
+                     new_unittest("RHF gradients of HI, Cartesian TeH2 and an HI dimer vs pyscf", test_rhf_pyscf_long), &
+                     new_unittest("UHF, RI-MP2 (HI) and RHF (CH3I) gradients in def2-TZVP (f) vs pyscf", &
+                                  test_f_pyscf_long) &
                      ]
       else
          testsuite = [ &
@@ -131,7 +165,10 @@ contains
                      new_unittest("UHF gradient of the HI cation (doublet) vs pyscf", test_uhf_pyscf), &
                      new_unittest("RI-MP2 gradient of HI vs pyscf", test_mp2_pyscf), &
                      new_unittest("HI/def2-SVP with an ECP: the gradient pre-check accepts it", test_upfront_ok), &
-                     new_unittest("an f basis function with an ECP: the gradient is refused up front", test_f_refused) &
+                     new_unittest("ECP gradient of f functions (g bra) vs pyscf and differences", test_f_ints), &
+                     new_unittest("ECP gradient of f functions: screened and chunked", test_f_screen_chunk), &
+                     new_unittest("an f basis function with an ECP: the gradient pre-check accepts it", test_upfront_f), &
+                     new_unittest("g functions, and f with an h projector, are refused", test_refusals) &
                      ]
       end if
    end subroutine collect_ecp_grad_tests
@@ -158,6 +195,22 @@ contains
          r(:, 2) = [0.3_dp, 0.2_dp, 3.04_dp]
          r(:, 3) = [4.6_dp, 1.1_dp, 0.9_dp]
          r(:, 4) = [4.9_dp, 4.0_dp, 1.9_dp]
+      case ("ceh")
+         nat = 2
+         allocate (elements(nat), r(3, nat))
+         elements = [58, 1]
+         r(:, 1) = [0.2_dp, -0.1_dp, 0.1_dp]
+         r(:, 2) = [1.9_dp, 1.3_dp, 3.2_dp]
+      case ("ch3i")
+         ! A little off C3v so no component vanishes by symmetry.
+         nat = 5
+         allocate (elements(nat), r(3, nat))
+         elements = [6, 53, 1, 1, 1]
+         r(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
+         r(:, 2) = [0.1_dp, -0.05_dp, 4.05_dp]
+         r(:, 3) = [1.95_dp, 0.05_dp, -0.65_dp]
+         r(:, 4) = [-1.0_dp, 1.70_dp, -0.70_dp]
+         r(:, 5) = [-0.95_dp, -1.68_dp, -0.68_dp]
       case default
          ! Te at the apex, 2.2 / 1.8 bohr to each H: a bent, non-symmetric frame.
          nat = 3
@@ -169,8 +222,9 @@ contains
       end select
    end subroutine geometry
 
-   subroutine ecp_u(nat, elements, r, ecp, u, err)
+   subroutine ecp_u(basis, nat, elements, r, ecp, u, err)
       !! The Cartesian ECP matrix at `r`; `ecp` is read once by the caller.
+      character(len=*), intent(in) :: basis
       integer, intent(in) :: nat, elements(:)
       real(dp), intent(in) :: r(3, nat)
       type(trc_ecp_t), intent(in) :: ecp
@@ -178,7 +232,7 @@ contains
       type(error_t), intent(inout) :: err
       type(trc_basis_t) :: bas
 
-      call trc_basis_from_json(DEF2_SVP, nat, elements, r, bas, err, force_cart=.true., &
+      call trc_basis_from_json(basis, nat, elements, r, bas, err, force_cart=.true., &
                                overrides=trc_basis_json_overrides(allow_ecp=.true.))
       if (err%has_error()) return
       call trc_ecp_matrix_cart(bas, ecp, u, err)
@@ -239,7 +293,7 @@ contains
 
       fd = 0.0_dp
       do k = 1, 4
-         call ecp_u(nat, elements, r + real(STEP(k), dp)*H*v, ecp, u, err)
+         call ecp_u(DEF2_SVP, nat, elements, r + real(STEP(k), dp)*H*v, ecp, u, err)
          call check(error,.not. err%has_error(), "dimer displaced matrix: "//err%get_message())
          if (allocated(error)) return
          fd = fd + WEIGHT(k)*sum(dens*u)
@@ -289,10 +343,25 @@ contains
    end subroutine dense_reference
 
    subroutine test_screen_chunk(error)
+      type(error_type), allocatable, intent(out) :: error
+      call screen_chunk_case(error, DEF2_SVP, "three I", dense=.true.)
+   end subroutine test_screen_chunk
+
+   subroutine test_f_screen_chunk(error)
+      !! The same over f shells, where the screen and the chunks also split
+      !! the g-bra tasks. The dense reference takes no f function; the
+      !! numbers themselves are test_f_ints'.
+      type(error_type), allocatable, intent(out) :: error
+      call screen_chunk_case(error, F_TEST, "three I, f", dense=.false.)
+   end subroutine test_f_screen_chunk
+
+   subroutine screen_chunk_case(error, basis, tag, dense)
       !! HI, an iodine 9 bohr off it and another 60 bohr off: three ECP
       !! atoms (and a hydrogen without one), tasks the screen drops, and
       !! (TERCO_ECP_GRAD_ATOM_CHUNK=1) one ECP atom a chunk.
       type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: basis, tag
+      logical, intent(in) :: dense
       type(trc_basis_t) :: bas
       type(trc_ecp_t) :: ecp
       type(error_t) :: err, refused
@@ -307,12 +376,12 @@ contains
       real(dp), allocatable :: dens(:, :)
       real(dp) :: g(3, NAT), g_all(3, NAT), g_chunk(3, NAT), g_ref(3, NAT)
 
-      call trc_basis_from_json(DEF2_SVP, NAT, ELEMENTS, R, bas, err, force_cart=.true., &
+      call trc_basis_from_json(basis, NAT, ELEMENTS, R, bas, err, force_cart=.true., &
                                overrides=trc_basis_json_overrides(allow_ecp=.true.))
-      call check(error,.not. err%has_error(), "three I: basis must build: "//err%get_message())
+      call check(error,.not. err%has_error(), tag//": basis must build: "//err%get_message())
       if (allocated(error)) return
-      call trc_ecp_from_json(DEF2_SVP, NAT, ELEMENTS, ecp, err)
-      call check(error,.not. err%has_error(), "three I: ECP must read: "//err%get_message())
+      call trc_ecp_from_json(basis, NAT, ELEMENTS, ecp, err)
+      call check(error,.not. err%has_error(), tag//": ECP must read: "//err%get_message())
       if (allocated(error)) return
       allocate (dens(bas%nao, bas%nao))
       call synthetic_density(dens)
@@ -325,29 +394,39 @@ contains
       g_chunk = 0.0_dp
       call trc_ecp_gradient(bas, ecp, dens, g_chunk, err, stats=st_chunk)
       rc = int(c_unsetenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char))
-      call dense_reference(bas, ecp, dens, g_ref, err)
-      call check(error,.not. err%has_error(), "three I: "//err%get_message())
+      g_ref = g
+      if (dense) call dense_reference(bas, ecp, dens, g_ref, err)
+      call check(error,.not. err%has_error(), tag//": "//err%get_message())
       if (allocated(error)) return
 
-      call global_logger%info("  three I: kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
-                              " tasks ("//to_string(st_all%nkept)//" unscreened), chunks "//to_string(st%nchunk)// &
+      call global_logger%info("  "//tag//": kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
+                              " tasks ("//to_string(st_all%nkept)//" unscreened), g bra "//to_string(st%nkept_g)// &
+                              " of "//to_string(st_all%nkept_g)//", chunks "//to_string(st%nchunk)// &
                               " and "//to_string(st_chunk%nchunk))
-      call global_logger%info("  three I: max|screened - unscreened| = "//to_string(maxval(abs(g - g_all)), "es10.3")// &
-                              ", |chunked - whole| = "//to_string(maxval(abs(g - g_chunk)), "es10.3")// &
-                              ", |gradient - dense reference| = "//to_string(maxval(abs(g - g_ref)), "es10.3"))
-      call check(error, maxval(abs(g_ref)) > 1.0e-2_dp, "three I: the reference is ~0, the test is blind")
+      call global_logger%info("  "//tag//": max|screened - unscreened| = "//to_string(maxval(abs(g - g_all)), "es10.3")// &
+                              ", |chunked - whole| = "//to_string(maxval(abs(g - g_chunk)), "es10.3"))
+      if (dense) call global_logger%info("  "//tag//": max|gradient - dense reference| = "// &
+                                         to_string(maxval(abs(g - g_ref)), "es10.3"))
+      call check(error, maxval(abs(g)) > 1.0e-2_dp, tag//": the gradient is ~0, the test is blind")
       if (allocated(error)) return
-      call check(error, st%nkept > 0_int64 .and. st%nkept < st_all%nkept, "three I: the screen must drop tasks")
+      call check(error, st%nkept > 0_int64 .and. st%nkept < st_all%nkept, tag//": the screen must drop tasks")
       if (allocated(error)) return
-      call check(error, st%nchunk == 1 .and. st_chunk%nchunk == 3, "three I: one chunk, and one per ECP atom when capped")
+      if (dense) then
+         call check(error, st_all%nkept_g == 0_int64, tag//": no g bra without f functions")
+      else
+         call check(error, st%nkept_g > 0_int64 .and. st%nkept_g < st_all%nkept_g, &
+                    tag//": the screen must keep some g-bra tasks and drop some")
+      end if
       if (allocated(error)) return
-      call check(error, maxval(abs(g - g_all)) < SCREEN_TOL, "three I: screened vs unscreened, max|diff| = "// &
+      call check(error, st%nchunk == 1 .and. st_chunk%nchunk == 3, tag//": one chunk, and one per ECP atom when capped")
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - g_all)) < SCREEN_TOL, tag//": screened vs unscreened, max|diff| = "// &
                  to_string(maxval(abs(g - g_all)), "es12.4"))
       if (allocated(error)) return
-      call check(error, maxval(abs(g - g_chunk)) < CHUNK_TOL, "three I: chunked vs whole, max|diff| = "// &
+      call check(error, maxval(abs(g - g_chunk)) < CHUNK_TOL, tag//": chunked vs whole, max|diff| = "// &
                  to_string(maxval(abs(g - g_chunk)), "es12.4"))
       if (allocated(error)) return
-      call check(error, maxval(abs(g - g_ref)) < CONTRACT_TOL, "three I: vs the dense reference, max|diff| = "// &
+      call check(error, maxval(abs(g - g_ref)) < CONTRACT_TOL, tag//": vs the dense reference, max|diff| = "// &
                  to_string(maxval(abs(g - g_ref)), "es12.4"))
       if (allocated(error)) return
 
@@ -355,13 +434,148 @@ contains
       call device_memory_set_cap(1000_int64)
       call trc_ecp_gradient(bas, ecp, dens, g_chunk, refused)
       call device_memory_set_cap(0_int64)
-      call check(error, refused%has_error(), "three I: 1000 free bytes of device memory must be refused")
+      call check(error, refused%has_error(), tag//": 1000 free bytes of device memory must be refused")
       if (allocated(error)) return
       call check(error, index(refused%get_message(), "device memory") > 0, &
-                 "three I: the refusal names the memory: "//refused%get_message())
+                 tag//": the refusal names the memory: "//refused%get_message())
       call bas%release()
       call ecp%release()
-   end subroutine test_screen_chunk
+   end subroutine screen_chunk_case
+
+   subroutine unit_norm_density(bas, dens)
+      !! The synthetic density of generate.py's `_ecp_gradient_contraction`:
+      !! d_ij = cos(0.37 (i + j)) / (1 + 0.05 |i - j|) in lexicographic
+      !! (pyscf's) order, divided by sqrt(S_ii S_jj), so the contraction does
+      !! not depend on either code's AO normalisation or component order.
+      type(trc_basis_t), intent(in) :: bas
+      real(dp), intent(out) :: dens(:, :)
+      real(dp), allocatable :: norm(:)
+      integer, allocatable :: lex(:)
+      real(dp), parameter :: PI = acos(-1.0_dp)
+      integer :: ish, l, m, mu, i, j, p, q, lx, ly, lz
+      real(dp) :: s, a
+
+      allocate (norm(bas%nao), lex(bas%nao))
+      do ish = 1, bas%nshell
+         l = bas%sh_l(ish)
+         do m = 0, (l + 1)*(l + 2)/2 - 1
+            mu = bas%sh_ao(ish) + m
+            lex(mu) = bas%sh_ao(ish) + cart_perm_b2l(l, m)
+            ! The powers of that lexicographic component.
+            ly = CART_POW_Y(lex(mu) - bas%sh_ao(ish))
+            lz = CART_POW_Z(lex(mu) - bas%sh_ao(ish))
+            lx = l - ly - lz
+            s = 0.0_dp
+            do p = 1, bas%sh_np(ish)
+               do q = 1, bas%sh_np(ish)
+                  a = bas%sh_e(p, ish) + bas%sh_e(q, ish)
+                  s = s + bas%sh_c(p, ish)*bas%sh_c(q, ish)*(PI/a)**1.5_dp/(2.0_dp*a)**l
+               end do
+            end do
+            norm(mu) = sqrt(s*odd_factorial(lx)*odd_factorial(ly)*odd_factorial(lz))
+         end do
+      end do
+      do j = 1, bas%nao
+         do i = 1, bas%nao
+            dens(i, j) = cos(0.37_dp*real(lex(i) + lex(j), dp))/(1.0_dp + 0.05_dp*real(abs(lex(i) - lex(j)), dp)) &
+                         /(norm(i)*norm(j))
+         end do
+      end do
+   end subroutine unit_norm_density
+
+   pure real(dp) function odd_factorial(n) result(f)
+      !! (2n - 1)!!.
+      integer, intent(in) :: n
+      integer :: k
+      f = 1.0_dp
+      do k = 1, n
+         f = f*real(2*k - 1, dp)
+      end do
+   end function odd_factorial
+
+   subroutine f_ints_case(error, name, ref)
+      !! The ECP term over ecp-f-test.json: every component against pyscf's
+      !! derivative integrals, and their sum along one direction (every atom
+      !! moving at once, four matrices) against a five-point difference of this
+      !! build's ECP matrix, whose f values check_ecp_matrix holds against
+      !! pyscf.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: name
+      real(dp), intent(in) :: ref(:, :)
+      type(trc_basis_t) :: bas
+      type(trc_ecp_t) :: ecp
+      type(error_t) :: err
+      type(trc_ecp_screen_stats_t) :: st
+      integer, parameter :: STEP(4) = [1, -1, 2, -2]
+      real(dp), parameter :: H = 1.0e-3_dp
+      real(dp), parameter :: WEIGHT(4) = [8.0_dp, -8.0_dp, -1.0_dp, 1.0_dp]
+      integer :: nat, ia, c, k
+      integer, allocatable :: elements(:)
+      real(dp), allocatable :: r(:, :), v(:, :), g(:, :), dens(:, :), u(:, :)
+      real(dp) :: fd, ana
+
+      call geometry(name, nat, elements, r)
+      call trc_basis_from_json(F_TEST, nat, elements, r, bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(allow_ecp=.true.))
+      call check(error,.not. err%has_error(), name//", f: basis must build: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, maxval(bas%sh_l(1:bas%nshell)) == 3, name//", f: the test basis must have f shells")
+      if (allocated(error)) return
+      call trc_ecp_from_json(F_TEST, nat, elements, ecp, err)
+      call check(error,.not. err%has_error(), name//", f: ECP must read: "//err%get_message())
+      if (allocated(error)) return
+      if (name == "ceh") then
+         call check(error, maxval(ecp%ecp_l(1:ecp%nrow)) == 4, "ceh, f: Ce's ECP must reach a projected l = 4")
+         if (allocated(error)) return
+      end if
+
+      allocate (g(3, nat), v(3, nat), dens(bas%nao, bas%nao))
+      call unit_norm_density(bas, dens)
+      g = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g, err, stats=st)
+      call check(error,.not. err%has_error(), name//", f: gradient: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, st%nkept_g > 0_int64, name//", f: no task with a g bra ran")
+      if (allocated(error)) return
+
+      do ia = 1, nat
+         do c = 1, 3
+            v(c, ia) = cos(1.3_dp*real(c, dp) + 2.1_dp*real(ia, dp))
+         end do
+      end do
+      ana = sum(g*v)
+      fd = 0.0_dp
+      do k = 1, 4
+         call ecp_u(F_TEST, nat, elements, r + real(STEP(k), dp)*H*v, ecp, u, err)
+         call check(error,.not. err%has_error(), name//", f: displaced matrix: "//err%get_message())
+         if (allocated(error)) return
+         ! The density stays the undisplaced one (its norms do not move).
+         fd = fd + WEIGHT(k)*sum(dens*u)
+      end do
+      fd = fd/(12.0_dp*H)
+      call global_logger%info("  "//name//", f: max|trc_ecp_gradient - pyscf| = "//to_string(maxval(abs(g - ref)), "es10.3")// &
+                              ", directional |derivative - difference| = "//to_string(abs(ana - fd), "es10.3")// &
+                              " (largest component "//to_string(maxval(abs(g)), "es10.3")//")")
+      call check(error, maxval(abs(ref)) > 1.0e-2_dp, name//", f: the reference is ~0, the test is blind")
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - ref)) < FINT_TOL, name//", f: vs pyscf, max|diff| = "// &
+                 to_string(maxval(abs(g - ref)), "es12.4"))
+      if (allocated(error)) return
+      call check(error, abs(ana - fd) < DIRECTION_TOL, name//", f: along a direction vs the difference of U, |diff| = "// &
+                 to_string(abs(ana - fd), "es12.4"))
+      call bas%release()
+      call ecp%release()
+   end subroutine f_ints_case
+
+   subroutine test_f_ints(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      call read_refs(refs)
+      call f_ints_case(error, "hi", refs%fint_hi)
+      if (allocated(error)) return
+      call f_ints_case(error, "ceh", refs%fint_ceh)
+   end subroutine test_f_ints
 
    subroutine ints_case(error, name)
       type(error_type), allocatable, intent(out) :: error
@@ -428,13 +642,13 @@ contains
             ! Five-point central difference of the whole matrix.
             rr = r
             rr(c, ix) = r(c, ix) + H
-            call ecp_u(nat, elements, rr, ecp, up, err)
+            call ecp_u(DEF2_SVP, nat, elements, rr, ecp, up, err)
             rr(c, ix) = r(c, ix) - H
-            call ecp_u(nat, elements, rr, ecp, um, err)
+            call ecp_u(DEF2_SVP, nat, elements, rr, ecp, um, err)
             rr(c, ix) = r(c, ix) + 2.0_dp*H
-            call ecp_u(nat, elements, rr, ecp, u2p, err)
+            call ecp_u(DEF2_SVP, nat, elements, rr, ecp, u2p, err)
             rr(c, ix) = r(c, ix) - 2.0_dp*H
-            call ecp_u(nat, elements, rr, ecp, u2m, err)
+            call ecp_u(DEF2_SVP, nat, elements, rr, ecp, u2m, err)
             call check(error,.not. err%has_error(), name//": displaced matrix: "//err%get_message())
             if (allocated(error)) return
             fd = (8.0_dp*(up - um) - (u2p - u2m))/(12.0_dp*H)
@@ -473,7 +687,7 @@ contains
       call ints_case(error, "hi_dimer")
    end subroutine test_ints_dimer
 
-   subroutine run_method(nat, elements, r, method, want_grad, cart, e, grad, status)
+   subroutine run_method(nat, elements, r, method, want_grad, cart, e, grad, status, basis)
       !! SCF (+ RI-MP2 for "mp2") at `r` through the C API; the total energy,
       !! and the gradient when asked.
       integer, intent(in) :: nat, elements(:)
@@ -483,9 +697,11 @@ contains
       !! Cartesian AOs (def2-SVP's own are spherical).
       real(dp), intent(out) :: e, grad(3, nat)
       integer, intent(out) :: status
+      character(len=*), intent(in), optional :: basis  !! def2-SVP when absent
       type(c_ptr) :: h
       integer(c_int) :: rc, charge, mult
       real(c_double) :: en
+      character(len=:), allocatable :: basis_file
 
       ! "uhf": the cation, a doublet, so the unrestricted (spin-summed) density.
       charge = merge(1_c_int, 0_c_int, method == "uhf")
@@ -493,12 +709,14 @@ contains
       e = 0.0_dp
       grad = 0.0_dp
       status = -1
+      basis_file = DEF2_SVP
+      if (present(basis)) basis_file = basis
       rc = trc_create(h)
       if (rc == TRC_OK) rc = trc_set_molecule(h, int(nat, c_int), real(elements, c_double), &
                                               reshape(real(r, c_double), [3*nat]), charge, mult)
       ! Before the basis load: it does not reach a basis already loaded.
       if (rc == TRC_OK .and. cart) rc = trc_set_force_cartesian(h, 1_c_int)
-      if (rc == TRC_OK) rc = trc_set_basis_json(h, DEF2_SVP//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_basis_json(h, basis_file//c_null_char)
       if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
       if (rc == TRC_OK .and. method == "pbe") rc = trc_set_method(h, "pbe"//c_null_char, 4_c_int)
       if (rc == TRC_OK .and. method == "mp2") rc = trc_set_aux_json(h, 'basis_sets/def2-svp-rifit.json'//c_null_char)
@@ -515,13 +733,14 @@ contains
       rc = trc_destroy(h)
    end subroutine run_method
 
-   subroutine grad_case(error, name, method, tol, ncoord)
+   subroutine grad_case(error, name, method, tol, ncoord, basis)
       !! The analytic gradient against a central difference of the energy,
       !! `ncoord` coordinates (atom, component) spread over the molecule.
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: name, method
       real(dp), intent(in) :: tol
       integer, intent(in) :: ncoord
+      character(len=*), intent(in), optional :: basis
       integer :: nat, status, k, ia, c, nsel
       character(len=:), allocatable :: tag
       integer, allocatable :: elements(:)
@@ -532,7 +751,7 @@ contains
       tag = name//"/"//method
       call geometry(name, nat, elements, r)
       allocate (g0(3, nat), gd(3, nat))
-      call run_method(nat, elements, r, method, .true., .false., e0, g0, status)
+      call run_method(nat, elements, r, method, .true., .false., e0, g0, status, basis)
       call check(error, status == 0, name//"/"//method//": the SCF and gradient must run, status "//to_string(status))
       if (allocated(error)) return
       worst = 0.0_dp
@@ -545,11 +764,11 @@ contains
          ia = ia/3 + 1
          rr = r
          rr(c, ia) = r(c, ia) + H
-         call run_method(nat, elements, rr, method, .false., .false., ep, gd, status)
+         call run_method(nat, elements, rr, method, .false., .false., ep, gd, status, basis)
          call check(error, status == 0, name//"/"//method//": displaced SCF must run")
          if (allocated(error)) return
          rr(c, ia) = r(c, ia) - H
-         call run_method(nat, elements, rr, method, .false., .false., em, gd, status)
+         call run_method(nat, elements, rr, method, .false., .false., em, gd, status, basis)
          call check(error, status == 0, name//"/"//method//": displaced SCF must run")
          if (allocated(error)) return
          fd = (ep - em)/(2.0_dp*H)
@@ -584,8 +803,18 @@ contains
       call ref_read_matrix(u, 'G_hi_dimer_sph', 3, 4, refs%dimer)
       call ref_read_real(u, 'E_hi_uhf', refs%e_uhf)
       call ref_read_matrix(u, 'G_hi_uhf', 3, 2, refs%uhf)
+      call ref_read_real(u, 'E_hi_tz', refs%e_skip)
+      call ref_read_matrix(u, 'G_hi_tz', 3, 2, refs%hi_tz)
+      call ref_read_real(u, 'E_hi_tz_uhf', refs%e_hi_tz_uhf)
+      call ref_read_matrix(u, 'G_hi_tz_uhf', 3, 2, refs%hi_tz_uhf)
+      call ref_read_real(u, 'E_ch3i_tz', refs%e_skip)
+      call ref_read_matrix(u, 'G_ch3i_tz', 3, 5, refs%ch3i_tz)
+      call ref_read_matrix(u, 'G_fint_hi', 3, 2, refs%fint_hi)
+      call ref_read_matrix(u, 'G_fint_ceh', 3, 2, refs%fint_ceh)
       call ref_read_real(u, 'E_hi_mp2', refs%e_mp2)
       call ref_read_matrix(u, 'G_hi_mp2', 3, 2, refs%mp2)
+      call ref_read_real(u, 'E_hi_tz_mp2', refs%e_hi_tz_mp2)
+      call ref_read_matrix(u, 'G_hi_tz_mp2', 3, 2, refs%hi_tz_mp2)
       call ref_close(u)
    end subroutine read_refs
 
@@ -633,12 +862,13 @@ contains
       call vs_pyscf(error, "hi", "mp2", .false., refs%mp2, refs%e_mp2)
    end subroutine test_mp2_pyscf
 
-   subroutine vs_pyscf(error, name, method, cart, ref, e_ref)
+   subroutine vs_pyscf(error, name, method, cart, ref, e_ref, basis)
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: name, method
       logical, intent(in) :: cart
       real(dp), intent(in) :: ref(:, :)
       real(dp), intent(in), optional :: e_ref
+      character(len=*), intent(in), optional :: basis
       character(len=:), allocatable :: tag
       integer :: nat, status
       integer, allocatable :: elements(:)
@@ -646,9 +876,10 @@ contains
       real(dp) :: e, worst
 
       tag = name//"/"//method//merge("/cartesian", "/spherical", cart)
+      if (present(basis)) tag = tag//"/def2-tzvp"
       call geometry(name, nat, elements, r)
       allocate (g(3, nat))
-      call run_method(nat, elements, r, method, .true., cart, e, g, status)
+      call run_method(nat, elements, r, method, .true., cart, e, g, status, basis)
       call check(error, status == 0, tag//": the SCF and gradient must run, status "//to_string(status))
       if (allocated(error)) return
       if (present(e_ref)) then
@@ -704,32 +935,173 @@ contains
       call grad_case(error, "hi", "uhf", GRAD_TOL_HF, 6)
    end subroutine test_uhf_hi
 
-   subroutine test_f_refused(error)
-      !! Xe in def2-SVP has an f shell and an ECP: the ECP derivative raises
-      !! each shell by one l, past the ECP kernels' f ceiling. The refusal is
-      !! the context's own, before any SCF, and says so; an LMAX=2 build could
-      !! refuse the same basis for its integral kernels first, which this
-      !! message check would still tell apart.
+   subroutine test_f_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      if (.not. HAVE_F_KERNELS) then
+         call skip_test(error, "an SCF over f functions needs TERCO_LMAX >= 3")
+         return
+      end if
+      call read_refs(refs)
+      call vs_pyscf(error, "hi", "hf", .false., refs%hi_tz, basis=DEF2_TZVP)
+   end subroutine test_f_pyscf
+
+   subroutine test_f_pyscf_long(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      if (.not. HAVE_F_KERNELS) then
+         call skip_test(error, "an SCF over f functions needs TERCO_LMAX >= 3")
+         return
+      end if
+      call read_refs(refs)
+      call vs_pyscf(error, "hi", "uhf", .false., refs%hi_tz_uhf, refs%e_hi_tz_uhf, DEF2_TZVP)
+      if (allocated(error)) return
+      call vs_pyscf(error, "hi", "mp2", .false., refs%hi_tz_mp2, refs%e_hi_tz_mp2, DEF2_TZVP)
+      if (allocated(error)) return
+      call vs_pyscf(error, "ch3i", "hf", .false., refs%ch3i_tz, basis=DEF2_TZVP)
+   end subroutine test_f_pyscf_long
+
+   subroutine f_grad_case(error, method, tol, ncoord)
+      !! Two coordinates each: an SCF in def2-TZVP costs ten of def2-SVP's.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: method
+      real(dp), intent(in) :: tol
+      integer, intent(in) :: ncoord
+
+      if (.not. HAVE_F_KERNELS) then
+         call skip_test(error, "an SCF over f functions needs TERCO_LMAX >= 3")
+         return
+      end if
+      call grad_case(error, "hi", method, tol, ncoord, DEF2_TZVP)
+   end subroutine f_grad_case
+
+   subroutine test_rhf_f(error)
+      type(error_type), allocatable, intent(out) :: error
+      call f_grad_case(error, "hf", GRAD_TOL_HF, 2)
+   end subroutine test_rhf_f
+
+   subroutine test_pbe_f(error)
+      type(error_type), allocatable, intent(out) :: error
+      call f_grad_case(error, "pbe", GRAD_TOL_KS, 2)
+   end subroutine test_pbe_f
+
+   subroutine test_uhf_f(error)
+      type(error_type), allocatable, intent(out) :: error
+      call f_grad_case(error, "uhf", GRAD_TOL_HF, 2)
+   end subroutine test_uhf_f
+
+   subroutine test_mp2_f(error)
+      type(error_type), allocatable, intent(out) :: error
+      call f_grad_case(error, "mp2", GRAD_TOL_MP2, 2)
+   end subroutine test_mp2_f
+
+   subroutine upfront(z, status, msg)
+      !! trc_check_gradient_upfront of one atom in def2-SVP, ECP attached.
+      integer, intent(in) :: z
+      integer, intent(out) :: status
+      character(len=*), intent(out) :: msg
       type(c_ptr) :: h
       integer(c_int) :: rc
-      character(len=1024) :: msg
 
+      msg = ""
       rc = trc_create(h)
-      if (rc == TRC_OK) rc = trc_set_molecule(h, 1_c_int, [54.0_c_double], [0.0_c_double, 0.0_c_double, 0.0_c_double], &
+      if (rc == TRC_OK) rc = trc_set_molecule(h, 1_c_int, [real(z, c_double)], [0.0_c_double, 0.0_c_double, 0.0_c_double], &
                                               0_c_int, 1_c_int)
       if (rc == TRC_OK) rc = trc_set_basis_json(h, DEF2_SVP//c_null_char)
-      call check(error, rc == TRC_OK, "Xe/def2-SVP setup must succeed")
-      if (allocated(error)) return
-      rc = trc_check_gradient_upfront(h)
-      call check(error, rc == TRC_ERR_UNSUPPORTED, "an f basis function over an ECP: the gradient pre-check must refuse")
-      if (.not. allocated(error)) then
-         msg = ""
-         call trc_message_text(h, msg)
-         call check(error, index(msg, "f basis functions") > 0, "the refusal names the f functions: "//trim(msg))
+      status = -1
+      if (rc == TRC_OK) then
+         status = int(trc_check_gradient_upfront(h))
+         if (status /= TRC_OK) call trc_message_text(h, msg)
       end if
       rc = trc_destroy(h)
-   end subroutine test_f_refused
+   end subroutine upfront
+
+   subroutine test_upfront_f(error)
+      !! Xe in def2-SVP has an f shell and an ECP: nothing about the ECP
+      !! refuses its gradient. An LMAX = 2 build still refuses it, for its
+      !! integral kernels.
+      type(error_type), allocatable, intent(out) :: error
+      integer :: status
+      character(len=1024) :: msg
+
+      call upfront(54, status, msg)
+      if (HAVE_F_KERNELS) then
+         call check(error, status == TRC_OK, "Xe/def2-SVP (f, ECP): the gradient pre-check refuses it: "//trim(msg))
+      else
+         call check(error, status == TRC_ERR_UNSUPPORTED .and. index(msg, "effective core potential") == 0, &
+                    "Xe/def2-SVP (f, ECP) below LMAX = 3: only the integral kernels may refuse: "//trim(msg))
+      end if
+   end subroutine test_upfront_f
+
+   subroutine test_refusals(error)
+      !! What the ECP gradient still does not take, said before any SCF: g
+      !! functions (Ce in def2-SVP), which the ECP matrix refuses too; and a
+      !! projected h channel together with f, whose angular factors would need
+      !! l = 9 tables. The same channel without f functions is accepted.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_ecp_t) :: ecp
+      type(error_t) :: err, refused, refused_u
+      integer :: status, nat, i
+      integer, allocatable :: elements(:)
+      real(dp), allocatable :: r(:, :), dens(:, :), u(:, :), g(:, :)
+      character(len=:), allocatable :: why
+      character(len=1024) :: msg
+
+      call upfront(58, status, msg)
+      call check(error, status == TRC_ERR_UNSUPPORTED .and. index(msg, "g or higher basis functions") > 0, &
+                 "Ce/def2-SVP (g, ECP): the pre-check must refuse and name g: "//trim(msg))
+      if (allocated(error)) return
+
+      call geometry("ceh", nat, elements, r)
+      call trc_basis_from_json(DEF2_SVP, nat, elements, r, bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(allow_ecp=.true.))
+      if (.not. err%has_error()) call trc_ecp_from_json(DEF2_SVP, nat, elements, ecp, err)
+      call check(error,.not. err%has_error(), "CeH/def2-SVP must read: "//err%get_message())
+      if (allocated(error)) return
+      allocate (dens(bas%nao, bas%nao), g(3, nat))
+      call synthetic_density(dens)
+      g = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g, refused)
+      call check(error, refused%has_error() .and. index(refused%get_message(), "g or higher") > 0, &
+                 "g functions: trc_ecp_gradient must refuse: "//refused%get_message())
+      if (allocated(error)) return
+      call check(error, all(g == 0.0_dp), "g functions: a refused gradient must add nothing")
+      if (allocated(error)) return
+      call trc_ecp_matrix_cart(bas, ecp, u, refused_u)
+      call check(error, refused_u%has_error(), "g functions: the ECP matrix must still refuse them")
+      if (allocated(error)) return
+      call bas%release()
+      call ecp%release()
+
+      call geometry("hi", nat, elements, r)
+      do i = 1, 2
+         ! i = 1: f functions; i = 2: def2-SVP, up to d.
+         if (i == 1) then
+            call trc_basis_from_json(F_TEST, nat, elements, r, bas, err, force_cart=.true., &
+                                     overrides=trc_basis_json_overrides(allow_ecp=.true.))
+         else
+            call trc_basis_from_json(DEF2_SVP, nat, elements, r, bas, err, force_cart=.true., &
+                                     overrides=trc_basis_json_overrides(allow_ecp=.true.))
+         end if
+         if (.not. err%has_error()) call trc_ecp_from_json(DEF2_SVP, nat, elements, ecp, err)
+         call check(error,.not. err%has_error(), "HI must read: "//err%get_message())
+         if (allocated(error)) return
+         ! Iodine's projected d channel, relabelled h.
+         where (ecp%ecp_l == 2) ecp%ecp_l = 5
+         why = trc_ecp_gradient_refusal(bas, ecp)
+         if (i == 1) then
+            call check(error, index(why, "l = 5") > 0, "f with an h projector must be refused, got: "//why)
+         else
+            call check(error, len(why) == 0, "d with an h projector must be accepted, got: "//why)
+         end if
+         if (allocated(error)) return
+         call bas%release()
+         call ecp%release()
+      end do
+   end subroutine test_refusals
 
    subroutine trc_message_text(h, text)
       !! trc_message's NUL-terminated buffer as a Fortran string.

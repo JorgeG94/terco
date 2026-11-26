@@ -872,7 +872,7 @@ contains
       if (.not. res%failed) then
          ! Every step runs the analytic gradient, and what the molecule,
          ! basis and ECP alone already refuse (l above the gradient kernels,
-         ! an f function with an ECP attached) would refuse the first evaluation -- DL-FIND's
+         ! a g function with an ECP attached) would refuse the first evaluation -- DL-FIND's
          ! `error stop` (fail_eval), which ends a C caller's process. Asked
          ! here, before any SCF, for the same reason as the RI-MP2 check
          ! below.
