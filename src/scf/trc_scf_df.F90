@@ -84,6 +84,7 @@ module trc_scf_df
    use trc_sph, only: sph_metric_cart_to_sph, sph_aux3c_to_sph
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_free_bytes
    use, intrinsic :: iso_fortran_env, only: output_unit
 #ifdef TRC_DEVICE
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
@@ -92,7 +93,7 @@ module trc_scf_df
    implicit none
    private
 
-   public :: df_jk_t
+   public :: df_jk_t, scf_df_choose_setup_block
 
    integer, parameter :: NSTEP = 11
    integer, parameter :: ST_METRIC = 1, ST_CHOL = 2, ST_3C = 3, ST_PACK = 4, ST_TRSM = 5, &
@@ -293,14 +294,14 @@ contains
       ! round's own bug, caught by the local-memory fix above freeing
       ! enough headroom for the naux/4 default to pass a free-memory check
       ! that did not yet know about the Cholesky step's own footprint) let
-      ! `choose_setup_block` approve an ablk whose tensor then OOM'd against
+      ! `scf_df_choose_setup_block` approve an ablk whose tensor then OOM'd against
       ! what the metric and Cholesky had since consumed. naux/4 at a time (the old,
       ! size-blind default) allocates a dense (n, n, naux/4) tensor for the
       ! (mu nu|P) build that alone can exceed what is left after bpk+the
       ! metric+Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
       ! memory-aware, same pattern as the per-iteration K block
       ! (`choose_qb`) and RI-MP2's own `k_group`.
-      ablk = choose_setup_block(n, naux_c, aux%spherical)
+      ablk = scf_df_choose_setup_block(n, naux_c, aux%spherical)
       if (present(aux_block)) ablk = max(aux_block, 1)
       call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
@@ -753,7 +754,7 @@ contains
       flush (output_unit)
    end subroutine dbg_rank
 
-   integer function choose_setup_block(n, naux, spherical) result(ablk)
+   integer function scf_df_choose_setup_block(n, naux, spherical) result(ablk)
       !! Auxiliary functions per (mu nu|P) setup block: as many as naux/4 unless the device's free memory (after `bpk`
       !! is resident) would not hold the dense scratch tensors of that block, then as many as fit with half a gigabyte
       !! kept back; the same pattern as `choose_qb`. A spherical auxiliary basis holds TWO dense
@@ -763,17 +764,15 @@ contains
       integer, intent(in) :: n, naux
       logical, intent(in) :: spherical
       integer(int64) :: free, per_q, fixed
-#ifdef TRC_DEVICE
-      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                  acc_property_free_memory), int64)
-#else
-      free = huge(0_int64)/2
-#endif
+      ! Through the one free-memory query, so the test hook (`device_memory_set_cap`) drives it on the host; unknown
+      ! (no device) means it fits.
+      free = device_memory_free_bytes()
+      if (free < 0) free = huge(0_int64)/2
       per_q = 8_int64*int(n, int64)*int(n, int64)*merge(2_int64, 1_int64, spherical)
       fixed = 512_int64*1024*1024
       ablk = int(min(int(max(naux/4, 1), int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
       ablk = max(1, min(ablk, naux))
-   end function choose_setup_block
+   end function scf_df_choose_setup_block
 
    pure integer function pack_index(mu, nu) result(p)
       !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: the packed row a

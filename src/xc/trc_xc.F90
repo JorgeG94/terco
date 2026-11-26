@@ -1539,7 +1539,7 @@ contains
       !! for an exactly symmetric input that is the identity bit for bit,
       !! and for one symmetric only to roundoff (trc_cpks's add_general) it
       !! changes the density by roundoff.
-      !! The output is symmetric (xc_resp_scatter_many adds V + V^T).
+      !! The output is symmetric (xc_resp_scatter_vb adds V + V^T).
       !!
       !! `dmats_u` is device-resident like `trc_xc_fxc_rks_apply`'s; `v_resp`
       !! is written in full, not accumulated into. nvec <= 0 only zeroes it.

@@ -266,7 +266,7 @@ module trc_tddft
    private
 
    public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_reference_t
-   public :: trc_tddft_solve_rks, trc_tddft_solve_rks_fitted, trc_tddft_refuse_reason
+   public :: trc_tddft_solve_rks, trc_tddft_solve_rks_fitted, trc_tddft_refuse_reason, tddft_set_pass_cap
    public :: tddft_window, tddft_window_t, tddft_space_t
    !! Public for the unit test of the window rule (a synthetic Ritz set).
 
@@ -282,6 +282,8 @@ module trc_tddft
    !! The preconditioner's denominator (d - w) is kept at least this far from
    !! zero, sign preserved.
    integer, parameter :: XC_VECTORS_RESERVED = 2
+   integer, save :: pass_cap = 0
+   !! TESTING (`tddft_set_pass_cap`): at most this many vectors per application of the fitted route, 0 for none.
    !! Trial densities' worth of f_xc scratch the fitted route leaves free on the device beside its MO blocks.
    integer(int64), parameter :: XC_CACHE_SHARE = 4_int64
    !! The XC cache of a fitted solve takes at most this fraction of the free device memory.
@@ -387,6 +389,8 @@ module trc_tddft
       !! Davidson iterations taken.
       integer :: nmatvec = 0
       !! Trial vectors multiplied by A in total.
+      integer :: max_pass = 0
+      !! The most trial vectors one application of A was given (the first pass carries every guess).
       integer :: nscreened_apply = 0
       !! Matvec passes (calls of `apply`/`apply_rpa`, one per Davidson iteration that had new
       !! vectors) that ran with the density screen on: the operator's own count, read back when
@@ -740,25 +744,48 @@ contains
       end if
    end function tddft_df_reserve
 
-   pure function tddft_max_block(opts, nov) result(nblock)
-      !! The most trial vectors one matvec pass of the solve below can carry: the guesses with the probe's vectors
-      !! (the first and the probe's passes) or the corrections of the Ritz vectors iterated (later passes), at most
-      !! the subspace. The Davidson sizes follow `tddft_solve_core`'s, and a tie at the guess cut can add more up to
-      !! the subspace, so a few more are allowed for.
+   subroutine tddft_set_pass_cap(nvec)
+      !! TESTING: serve the fitted route's applications in pieces of at most `nvec` vectors, the budget a pass
+      !! larger than `tddft_max_block` estimated (a tie at the guess cut) is split to; 0 lifts it.
+      integer, intent(in) :: nvec
+      pass_cap = max(nvec, 0)
+   end subroutine tddft_set_pass_cap
+
+   pure subroutine tddft_subspace_sizes(opts, nov, nt, mmax, nguess, nkcap)
+      !! The sizes of the Davidson subspace, from the options and the number of occupied-virtual pairs: the
+      !! block iterated `nt` (the roots wanted plus a buffer of Ritz vectors), the subspace limit `mmax`, the
+      !! guesses `nguess` before the tie extension and the Ritz vectors `nkcap` a collapse keeps. One place for
+      !! the solver and for `tddft_max_block`, so the memory budget cannot drift from what the solver does.
       type(trc_tddft_options_t), intent(in) :: opts
       integer, intent(in) :: nov
-      integer :: nblock
-      integer :: nr, nt, mmax, nguess, nkcap
+      integer, intent(out) :: nt, mmax, nguess, nkcap
+      integer :: nr
       nr = opts%nroots
-      nt = min(nr + max(2, nr/2), nov)
       mmax = opts%max_space
       if (mmax <= 0) mmax = 24*max(nr, 3)
+      ! The block iterated is the nroots wanted plus a buffer of further Ritz vectors (see the header, MISSED ROOTS).
+      nt = min(nr + max(2, nr/2), nov)
       mmax = min(max(mmax, merge(3, 4, opts%tda)*nt), nov)
       nguess = opts%nguess
       if (nguess <= 0) nguess = max(2*nr, nr + 4)
       nguess = min(max(nguess, nt), nov, mmax)
+      ! The Ritz vectors kept across a collapse (nkcap of them, plus at most as many corrections) must fit:
+      ! 2 nkcap <= mmax; the RPA keeps two vectors per pair and adds two per correction: 4 nkcap <= mmax.
       nkcap = max(nt, min(nt + max(2, nr), mmax/merge(2, 4, opts%tda)))
-      nblock = min(mmax, max(nguess + NRAND_PROBE + 4, nkcap))
+   end subroutine tddft_subspace_sizes
+
+   pure function tddft_max_block(opts, nov) result(nblock)
+      !! The most trial vectors one matvec pass of the solve below can carry: the guesses with the probe's vectors
+      !! (the first and the probe's passes) or the corrections of the Ritz vectors iterated (later passes: one per
+      !! unconverged pair, two for the RPA, which adds the sum and the difference of each), at most the subspace.
+      !! A tie at the guess cut can add more up to the subspace, so a few more are allowed for; the applications
+      !! of the fitted route split a larger pass at this size (`tddft_op_apply`), so it is a bound, not an estimate.
+      type(trc_tddft_options_t), intent(in) :: opts
+      integer, intent(in) :: nov
+      integer :: nblock
+      integer :: nt, mmax, nguess, nkcap
+      call tddft_subspace_sizes(opts, nov, nt, mmax, nguess, nkcap)
+      nblock = min(mmax, max(nguess + NRAND_PROBE + 4, merge(1, 2, opts%tda)*nkcap))
    end function tddft_max_block
 
    subroutine tddft_add_diag(nov, nvec, de, x, ax)
@@ -807,7 +834,12 @@ contains
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
       if (nvec < 1) return
       if (this%fitted) then
-         call tddft_op_apply_df(this, b, la, nvec, x, ax, xg)
+         ! The scratch of the fitted route was budgeted for nvec_max vectors at most; a larger pass (a tie at the guess
+         ! cut) is served in pieces of that size rather than growing it past what the memory has left.
+         do k = 1, nvec, max(this%nvec_max, 1)
+            n = min(max(this%nvec_max, 1), nvec - k + 1)
+            call tddft_op_apply_df(this, b, la, n, x(:, :, k:k + n - 1), ax(:, :, k:k + n - 1), xg)
+         end do
          return
       end if
       n = this%nao
@@ -942,6 +974,7 @@ contains
       type(trc_xc_grid_t), intent(in), optional :: xg
       !! Needed exactly when `setup` was given a functional.
       real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), half_occ(:, :)
+      real(dp), allocatable :: axp(:, :, :, :)
       integer :: n, nocc, nvir, k, ndens
       logical :: antisym
       integer(int64) :: nkept_sym
@@ -950,7 +983,13 @@ contains
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
       if (nvec < 1) return
       if (this%fitted) then
-         call tddft_op_apply_rpa_df(this, b, la, nvec, x, ax, xg)
+         ! As in `tddft_op_apply`: pieces of at most nvec_max vectors, the budget of the scratch.
+         allocate (axp(this%nocc, this%nvir, min(max(this%nvec_max, 1), nvec), 2))
+         do k = 1, nvec, max(this%nvec_max, 1)
+            n = min(max(this%nvec_max, 1), nvec - k + 1)
+            call tddft_op_apply_rpa_df(this, b, la, n, x(:, :, k:k + n - 1), axp(:, :, 1:n, :), xg)
+            ax(:, :, k:k + n - 1, :) = axp(:, :, 1:n, :)
+         end do
          return
       end if
       n = this%nao
@@ -1035,6 +1074,7 @@ contains
    end subroutine tddft_df_xc_scratch
 
    subroutine tddft_df_xc_free(this)
+      !! Release the XC scratch of `tddft_df_xc_scratch` (device copies first) and forget its capacity.
       type(trc_tddft_op_t), intent(inout) :: this
       if (allocated(this%xc_tmat)) then
          !$acc exit data delete(this%xc_tmat, this%xc_vxc, this%xc_half)
@@ -1314,8 +1354,11 @@ contains
       real(dp), intent(inout) :: vs(nov, *), tc(nov, nc)
       integer, intent(out) :: nnew
       real(dp) :: n1
-      real(dp) :: n0(max(nc, 1)), projo(max(m, 1), max(nc, 1)), projn(max(nc, 1))
+      real(dp) :: n0(max(nc, 1)), projn(max(nc, 1))
+      real(dp), allocatable :: projo(:, :)
+      !! (m, nc): 19 MB at 200 roots, so on the heap, not an automatic array on the 8 MB default stack.
       integer :: j, p, q, mm
+      allocate (projo(max(m, 1), max(nc, 1)))
       nnew = 0
       mm = m
       do j = 1, nc
@@ -1328,7 +1371,8 @@ contains
          end do
       else
          ! A GEMM with one column or one vector is a GEMV: kept off BLAS as a guard for the device build, which loads
-         ! two OpenMP runtimes (it crashed in MKL's threaded GEMV once).
+         ! two OpenMP runtimes (nvomp and MKL's iomp5/gomp), where MKL's dgemv segfaulted. Remove the guard when
+         ! GitHub issue #311 (the double OpenMP link) is fixed.
          do j = 1, nc
             do p = 1, 2
                do q = 1, m
@@ -1619,6 +1663,7 @@ contains
       nnew = sp%m
       res%iterations = 0
       res%nmatvec = 0
+      res%max_pass = 0
       have_th = .false.
 
       do
@@ -1634,6 +1679,7 @@ contains
             sp%ams(:, c0:sp%m) = reshape(prod(:, :, :, 2), [nov, nnew])
             deallocate (prod)
             res%nmatvec = res%nmatvec + nnew
+            res%max_pass = max(res%max_pass, nnew)
             if (.not. all(ieee_is_finite(sp%avs(:, c0:sp%m))) .or. .not. all(ieee_is_finite(sp%ams(:, c0:sp%m)))) then
                call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
                exit
@@ -1854,6 +1900,7 @@ contains
          return
       end if
       op%nvec_max = tddft_max_block(opts, ref%nocc*(size(ref%cmo, 2) - ref%nocc))
+      if (pass_cap > 0) op%nvec_max = min(op%nvec_max, pass_cap)
       op%rpa = .not. opts%tda
       call op%setup(b, la, ref, res%err, xg, dfjk)
       if (res%err%has_error()) then
@@ -1909,17 +1956,9 @@ contains
          call op%release()
          return
       end if
-      sp%mmax = opts%max_space
-      if (sp%mmax <= 0) sp%mmax = 24*max(nr, 3)
-      ! The block iterated is the nroots wanted plus a buffer of further Ritz
-      ! vectors (see the header, MISSED ROOTS).
-      nt = min(nr + max(2, nr/2), nov)
+      call tddft_subspace_sizes(opts, nov, nt, sp%mmax, sp%nguess, sp%nkcap)
       buffer_threshold = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
       sp%nt = nt
-      sp%mmax = min(max(sp%mmax, merge(3, 4, opts%tda)*nt), nov)
-      sp%nguess = opts%nguess
-      if (sp%nguess <= 0) sp%nguess = max(2*nr, nr + 4)
-      sp%nguess = min(max(sp%nguess, nt), nov, sp%mmax)
 
       allocate (sp%vs(nov, sp%mmax), sp%avs(nov, sp%mmax), hsub(sp%mmax, sp%mmax), csub(sp%mmax, sp%mmax), wsub(sp%mmax))
       ! Room for every Ritz vector of the subspace once the probe has run (see
@@ -1928,10 +1967,6 @@ contains
       allocate (win%act(sp%mmax), win%kept_index(sp%mmax))
       allocate (dgn(nov), dsort(nov))
       allocate (sp%ord(nov))
-      ! The Ritz vectors kept across a collapse (nkcap of them, plus at most as many
-      ! corrections) must fit: 2 nkcap <= mmax; the RPA keeps two vectors per pair
-      ! and adds two per correction: 4 nkcap <= mmax.
-      sp%nkcap = max(nt, min(nt + max(2, nr), sp%mmax/merge(2, 4, opts%tda)))
       if (.not. opts%tda) allocate (sp%ams(nov, sp%mmax))
 
       ! Diagonal (e_a - e_i) in the flat (i fastest) ordering of the amplitudes;
@@ -1966,6 +2001,7 @@ contains
       nnew = sp%nguess
       res%iterations = 0
       res%nmatvec = 0
+      res%max_pass = 0
       done = .false.
       xiter = 0
       win%nopen = 0
@@ -1995,6 +2031,7 @@ contains
             call th%start()
             have_th = .true.
             res%nmatvec = res%nmatvec + nnew
+            res%max_pass = max(res%max_pass, nnew)
             if (.not. all(ieee_is_finite(sp%avs(:, sp%m - nnew + 1:sp%m)))) then
                call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
                exit

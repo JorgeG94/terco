@@ -877,7 +877,7 @@ contains
       !! reset is clearing room for, and dropping below their own need
       !! only moves the regrowth -- at a moment chosen to have the LEAST
       !! free memory of the whole run, right after the fit's own setup
-      !! block has claimed everything choose_setup_block thought was safe
+      !! block has claimed everything scf_df_choose_setup_block thought was safe
       !! -- to a cuLaunchKernel OOM instead of a cuMemAlloc one (measured:
       !! it did, at trc_df_3c_k223, with 1024 here). 32 KiB clears every
       !! three-centre and two-centre DF kernel class measured so far with

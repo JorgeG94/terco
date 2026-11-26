@@ -101,10 +101,11 @@ module trc_tddft_df
 
    integer, parameter :: VMAX = 16
    !! Trial vectors per pass over the blocks: the Davidson's new vectors of an iteration are 5 to 30.
-   integer(int64), parameter :: RESERVE = 536870912_int64
+   integer(int64), parameter, public :: DF_RESERVE = 536870912_int64
    !! Device bytes kept back for the libraries.
-   integer(int64), parameter :: HOST_FREE = 8589934592_int64
-   !! What the host build treats as free (it has no device to ask).
+   integer(int64), parameter :: UNKNOWN_FREE = huge(0_int64)/4
+   !! What an unknown free memory counts as (the host build has no device to ask, as `device_memory_fits`: every
+   !! request fits), far from overflowing the sums below.
 
    integer, save :: force_qblk = 0
    integer, save :: force_resident = -1
@@ -230,22 +231,25 @@ contains
       v8 = VMAX
       nrow = merge(no8 + nv8, no8, plan%exchange)
       per_res = 8_int64*(no8*nv8 + merge(no8*no8 + nv8*nv8, 0_int64, plan%exchange))
-      per_apply = 8_int64*(no8*v8*max(nv8, no8) + v8)
+      ! Per auxiliary function of the chunk: the Coulomb vector, and with exchange the K1/K2 intermediate (a pure
+      ! functional has none, a third of the budget otherwise charged for nothing).
+      per_apply = 8_int64*(merge(no8*v8*max(nv8, no8), 0_int64, plan%exchange) + v8)
       per_build = 8_int64*(n8*n8 + nrow*n8)
       ! The group-major scratch, for the groups of the largest application: x reordered for K1 and the K1
       ! accumulator, and with K2 the reordering and accumulator of K2 as well.
       ngrp8 = (max(plan%nvec_max, 1) + VMAX - 1)/VMAX
       fixed = merge(8_int64*(2_int64 + merge(2_int64, 0_int64, plan%k2))*no8*nv8*v8*ngrp8, 0_int64, plan%exchange)
       free = device_memory_free_bytes()
-      if (free < 0) free = HOST_FREE
-      avail = free - RESERVE - extra
+      if (free < 0) free = UNKNOWN_FREE
+      avail = free - DF_RESERVE - extra
       per_all = per_res + per_apply + per_build
       if (avail < fixed + per_all) then
          call err%set(ERROR_VALIDATION, "trc_tddft: the density-fitted excitation operator needs at least "// &
                       to_string(real(fixed + per_all, dp)/1.0e9_dp, "f8.3")//" GB of device memory (one auxiliary "// &
                       "function of "//to_string(plan%naux)//", "//to_string(plan%nocc)//" occupied and "// &
-                      to_string(plan%nvir)//" virtual orbitals) and "// &
-                      to_string(real(max(avail, 0_int64), dp)/1.0e9_dp, "f8.3")// &
+                      to_string(plan%nvir)//" virtual orbitals) beside "// &
+                      to_string(real(DF_RESERVE + extra, dp)/1.0e9_dp, "f8.3")//" GB held back for the libraries and "// &
+                      "the caller, and "//to_string(real(free, dp)/1.0e9_dp, "f8.3")// &
                       " GB are free: use a smaller basis or a device with more memory")
          qblk = 0
          nres = 0

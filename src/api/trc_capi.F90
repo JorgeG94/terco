@@ -4203,11 +4203,11 @@ contains
       ! independent reservation -- its size tracks how much is free when it
       ! fires, which is exactly why paying it HERE, first, matters: every
       ! allocation after it (`cx%dfjk%setup`'s B, and its own free-memory-
-      ! aware block sizing in `choose_setup_block`/`choose_qb`) then sees the
+      ! aware block sizing in `scf_df_choose_setup_block`/`choose_qb`) then sees the
       ! device's true remaining budget instead of one this cost is about to
       ! shrink out from under it. Measured consequence at w40 cc-pVDZ --df
       ! (1000 functions, naux 10640, B alone ~19.8 GiB): with the fit BEFORE
-      ! the guess (the old order), `choose_setup_block` sized its (mu nu|P)
+      ! the guess (the old order), `scf_df_choose_setup_block` sized its (mu nu|P)
       ! scratch against free memory that had not yet paid this cost, and the
       ! run died with CUDA_ERROR_OUT_OF_MEMORY inside that scratch's own
       ! allocation; with the fit AFTER (this order), the same run converges

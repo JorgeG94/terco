@@ -14,9 +14,13 @@ module check_tddft_df_suite
    !!     resident, with none resident (every chunk rebuilt from the packed B inside each application) and with
    !!     some resident, to round-off (`tddft_df_set_blocks`);
    !!  5. more roots than one pass of vectors holds (NROOTS_MANY gives 18 guesses, more than the 16 vectors of a
-   !!     group and not a multiple of it) with chunks that leave a partial last chunk, resident, rebuilt and mixed,
-   !!     against the same solve unblocked, to round-off;
-   !!  6. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
+   !!     group and not a multiple of it, the application's own count checked): the roots against a four-centre
+   !!     solve to the fitting error, then with chunks that leave a partial last chunk, resident, rebuilt and
+   !!     mixed, against the same solve unblocked, to round-off;
+   !!  6. the memory sizing under `device_memory_set_cap`: a cap equal to the bytes the operator needs (the
+   !!     module's own derivation restated here, with and without exchange) is accepted, one byte less is refused;
+   !!     and a spherical auxiliary basis halves the (mu nu|P) setup block of the DF-SCF under a cap;
+   !!  7. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
    !!     check -- it was overwritten by an operator-precedence slip), a fit-less solve, an unset fit, a fit of another
    !!     basis, and the refusal plumbing for a device cap below the reserve (`device_memory_set_cap`), after which
    !!     the fit is intact and solves again. A second ctest entry of the water Cartesian HF case runs the anchors with
@@ -29,8 +33,8 @@ module check_tddft_df_suite
    !! to the probe file for generate.py.
    !!
    !! Arguments: xyz basis.json aux.json molname space(cart|sph) funcname probe.bin [mode]. Run from test/.
-   !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4, 5 and the release. Items 4
-   !! and 5 do not depend on the molecule, the functional or the space, so ctest runs them once for HF (exchange on)
+   !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4-7 and the release. Items 4-7
+   !! do not depend on the molecule, the functional or the space, so ctest runs them once for HF (exchange on)
    !! and once for PBE (exchange off) on water Cartesian instead of in every program (each costs two SCFs and a dozen solves).
    !!
    use pic_types, only: dp, int64
@@ -41,8 +45,9 @@ module check_tddft_df_suite
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_scf_df, only: df_jk_t
-   use trc_tddft_df, only: tddft_df_set_blocks
+   use trc_scf_df, only: df_jk_t, scf_df_choose_setup_block
+   use trc_tddft, only: tddft_set_pass_cap
+   use trc_tddft_df, only: tddft_df_set_blocks, df_excitation_t, df_request_t, DF_RESERVE
    use trc_device_memory, only: device_memory_set_cap
    use trc_df_kernels, only: DF_LMAX_AUX
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
@@ -68,6 +73,9 @@ module check_tddft_df_suite
    !! Fitted against four-centre excitation energies (hartree): the fitting error of def2-universal-jkfit in the
    !! lowest roots is 1.0e-5 to 1.6e-5 (measured, water and formamide, HF/PBE/B3LYP); a wrong operator (a missing
    !! exchange term, a wrong weight) moves them by 1e-2 or more.
+   real(dp), parameter :: FIT_BOUND_MANY = 1.0e-3_dp
+   !! The same for the NROOTS_MANY lowest roots, whose fitting error is larger (1.4e-4 for the nine of water,
+   !! measured); an operator that reads one vector group's data for another moves them by 1e-2 or more.
    integer, parameter :: NROOTS = 3
    integer, parameter :: NROOTS_MANY = 9
    !! 2 NROOTS_MANY = 18 guess vectors in the first application: two groups (16 + 2).
@@ -131,6 +139,8 @@ contains
          testsuite = [ &
                      new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
                      new_unittest("several vector groups with partial chunks equal the unblocked solve", test_groups), &
+                     new_unittest("device memory sizing accepts the need and refuses a byte less", test_sizing), &
+                     new_unittest("a spherical auxiliary basis halves the setup block under a cap", test_setup_block), &
                      new_unittest("refusals", test_refusals), &
                      new_unittest("release", test_release) &
                      ]
@@ -386,14 +396,20 @@ contains
 
    subroutine test_groups(error)
       !! The first application carries 18 vectors (two groups of the fitted products, 16 and 2) and the chunk size
-      !! leaves a partial last chunk: every block resident, none resident, the first chunks resident, in the TDA
-      !! and the RPA, against the unblocked solve of the same roots.
+      !! leaves a partial last chunk. The unblocked solve of the NROOTS_MANY roots runs the same group-major code
+      !! as the blocked ones, so it is no reference for it: it is checked against a four-centre SCF and TDDFT of the
+      !! molecule (an operator that reads one group's slice for every group moves the roots by 1e-2 or more, the
+      !! fitting error is 1e-5), then every block resident, none resident and the first chunks resident, in the TDA
+      !! and the RPA, against it to round-off.
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: RESIDENT(3) = [-1, 0, 2]
-      type(trc_tddft_run_result_t) :: ref_tda, ref_rpa, tda, rpa
+      type(trc_tddft_run_result_t) :: ref_tda, ref_rpa, tda, rpa, ex_tda, ex_rpa
       type(trc_tddft_run_options_t) :: o
-      real(dp) :: dom
-      integer :: k, n, naux, npack, blk
+      type(trc_scf_options_t) :: sopts4
+      type(trc_scf_result_t) :: scf4
+      real(dp) :: dom, d_tda, d_rpa
+      integer :: k, n, naux, npack, blk, nres
+      character(len=16) :: tag
 
       call fixture_build(error)
       if (allocated(error)) return
@@ -411,10 +427,53 @@ contains
       call check(error, ref_tda%converged .and. ref_rpa%converged, "the unblocked many-root solves failed: "// &
                  ref_tda%err%get_message()//ref_rpa%err%get_message())
       if (allocated(error)) return
-      call check(error, ref_tda%td%nmatvec > 16 .and. ref_rpa%td%nmatvec > 16, "fewer than 17 vectors: one group only")
+      ! The most vectors one application was given, not the matvecs of the whole solve: one group would show 16.
+      call check(error, ref_tda%td%max_pass > 16 .and. ref_rpa%td%max_pass > 16, "no application carried more than "// &
+                 "16 vectors (TDA "//to_string(ref_tda%td%max_pass)//", RPA "//to_string(ref_rpa%td%max_pass)// &
+                 "): one group only")
+      if (allocated(error)) return
+      ! The independent reference: the four-centre roots, to the fitting error.
+      call scf_settings(sopts4, .false.)
+      call trc_scf_run(fx%bas, fx%nocc, fx%nocc, sopts4, scf4, la=fx%la)
+      call check(error, scf4%converged, "the four-centre SCF did not converge")
+      if (allocated(error)) return
+      o%tda = .true.
+      call trc_tddft_run_solve(fx%bas, fx%la, scf4, fx%nocc, sopts4, o, ex_tda)
+      o%tda = .false.
+      call trc_tddft_run_solve(fx%bas, fx%la, scf4, fx%nocc, sopts4, o, ex_rpa)
+      call check(error, ex_tda%converged .and. ex_rpa%converged, "the four-centre many-root solves failed: "// &
+                 ex_tda%err%get_message()//ex_rpa%err%get_message())
+      if (allocated(error)) return
+      d_tda = maxval(abs(ref_tda%omega - ex_tda%omega))
+      d_rpa = maxval(abs(ref_rpa%omega - ex_rpa%omega))
+      call global_logger%info("tddft df "//to_string(NROOTS_MANY)//" roots vs four-centre: max|d omega| TDA "// &
+                              to_string(d_tda, "es10.2")//", RPA "//to_string(d_rpa, "es10.2")//" (bound "// &
+                              to_string(FIT_BOUND_MANY, "es8.1")//"); most vectors in one application TDA "// &
+                              to_string(ref_tda%td%max_pass)//", RPA "//to_string(ref_rpa%td%max_pass))
+      call check(error, d_tda < FIT_BOUND_MANY, "many-root TDA fitted vs four-centre, "//to_string(d_tda, "es10.2"))
+      if (allocated(error)) return
+      call check(error, d_rpa < FIT_BOUND_MANY, "many-root RPA fitted vs four-centre, "//to_string(d_rpa, "es10.2"))
+      if (allocated(error)) return
+      ! A pass larger than the scratch was budgeted for (a tie at the guess cut can make one) is served in pieces of
+      ! the budgeted size, not by growing the scratch: 18 vectors in pieces of 5 (a partial last piece) change nothing.
+      call tddft_set_pass_cap(5)
+      o%tda = .true.
+      call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, tda, fx%dfjk)
+      o%tda = .false.
+      call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, rpa, fx%dfjk)
+      call tddft_set_pass_cap(0)
+      call check(error, tda%converged .and. rpa%converged, "a split-pass many-root solve failed: "// &
+                 tda%err%get_message()//rpa%err%get_message())
+      if (allocated(error)) return
+      dom = max(maxval(abs(tda%omega - ref_tda%omega)), maxval(abs(rpa%omega - ref_rpa%omega)))
+      call global_logger%info("tddft df groups (passes split at 5 vectors): max|d omega| "//to_string(dom, "es10.2"))
+      call check(error, dom < TOL_GROUP_OMEGA, "split-pass omega vs unsplit, "//to_string(dom, "es10.2"))
       if (allocated(error)) return
       do k = 1, size(RESIDENT)
-         call tddft_df_set_blocks(blk, RESIDENT(k)*blk)
+         nres = merge(-1, RESIDENT(k)*blk, RESIDENT(k) < 0)
+         tag = "all"
+         if (nres >= 0) tag = to_string(nres)
+         call tddft_df_set_blocks(blk, nres)
          o%tda = .true.
          call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, tda, fx%dfjk)
          o%tda = .false.
@@ -425,7 +484,7 @@ contains
          if (allocated(error)) return
          dom = max(maxval(abs(tda%omega - ref_tda%omega)), maxval(abs(rpa%omega - ref_rpa%omega)))
          call global_logger%info("tddft df groups (chunk "//to_string(blk)//" of "//to_string(naux)//", resident "// &
-                                 to_string(RESIDENT(k)*blk)//"): max|d omega| "//to_string(dom, "es10.2"))
+                                 trim(tag)//"): max|d omega| "//to_string(dom, "es10.2"))
          call check(error, dom < TOL_GROUP_OMEGA, "grouped blocked omega vs unblocked, "//to_string(dom, "es10.2"))
          if (allocated(error)) return
          dom = max(maxval(abs(tda%osc - ref_tda%osc)), maxval(abs(rpa%ynorm - ref_rpa%ynorm)))
@@ -433,6 +492,88 @@ contains
          if (allocated(error)) return
       end do
    end subroutine test_groups
+
+   subroutine test_sizing(error)
+      !! The device-memory sizing of `df_excitation_t%setup`, driven by `device_memory_set_cap`: the bytes it needs
+      !! are one auxiliary function's worth of everything (the resident blocks, an application's scratch, the unpack
+      !! and half-transform scratch) plus the group-major vectors plus DF_RESERVE. Restated here from the module
+      !! header, so a charge for scratch that is not allocated (a pure functional's K1/K2 intermediate) or one that
+      !! is missing moves the threshold and fails. Exactly that is accepted, one byte less is refused.
+      type(error_type), allocatable, intent(out) :: error
+      integer, parameter :: VMAX = 16
+      type(df_excitation_t) :: dx
+      type(df_request_t) :: req
+      type(error_t) :: err
+      integer(int64) :: n8, no8, nv8, need
+      integer :: ex, no, nv, n, naux, npack
+      logical :: exchange
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, .not. fx%bas%spherical, "the sizing test restates the Cartesian case")
+      if (allocated(error)) return
+      call fx%dfjk%dims(n, naux, npack)
+      no = fx%nocc
+      nv = n - no
+      n8 = n
+      no8 = no
+      nv8 = nv
+      do ex = 0, 1
+         exchange = ex == 1
+         if (exchange) then
+            need = DF_RESERVE + 8_int64*(2_int64 + 2_int64)*no8*nv8*VMAX            ! x, K1 and K2 group-major vectors
+            need = need + 8_int64*(no8*nv8 + no8*no8 + nv8*nv8)                     ! one function's blocks
+            need = need + 8_int64*(no8*VMAX*max(nv8, no8) + VMAX)                   ! its w and tq
+            need = need + 8_int64*(n8*n8 + (no8 + nv8)*n8)                          ! its unpack and half-transform
+         else
+            need = DF_RESERVE + 8_int64*no8*nv8 + 8_int64*VMAX + 8_int64*(n8*n8 + no8*n8)
+         end if
+         req = df_request_t(exchange=exchange, k2=exchange, nvec_max=VMAX, extra_bytes=0_int64)
+         call device_memory_set_cap(need - 1)
+         call dx%setup(fx%dfjk, fx%la, fx%scf%cmo(:, 1:no, 1), fx%scf%cmo(:, no + 1:n, 1), req, err)
+         call device_memory_set_cap(0_int64)
+         call check(error, err%has_error() .and. index(err%get_message(), "device memory") > 0, &
+                    "a cap one byte below the need ("//to_string(need)//", exchange "//merge("on ", "off", exchange)// &
+                    ") was not refused")
+         if (allocated(error)) return
+         call check(error, fx%dfjk%is_ready(), "the fit was left lent after a refused setup")
+         if (allocated(error)) return
+         call err%clear()
+         call device_memory_set_cap(need)
+         call dx%setup(fx%dfjk, fx%la, fx%scf%cmo(:, 1:no, 1), fx%scf%cmo(:, no + 1:n, 1), req, err)
+         call device_memory_set_cap(0_int64)
+         call dx%restore(fx%dfjk)
+         call check(error, .not. err%has_error(), "a cap equal to the need ("//to_string(need)//", exchange "// &
+                    merge("on ", "off", exchange)//") was refused: "//err%get_message())
+         if (allocated(error)) return
+         call check(error, fx%dfjk%is_ready(), "the fit was not handed back by restore")
+         if (allocated(error)) return
+      end do
+   end subroutine test_sizing
+
+   subroutine test_setup_block(error)
+      !! `scf_df_choose_setup_block` reads the free memory through `device_memory_free_bytes`, so a cap drives it on the host:
+      !! room for 40 dense (n, n) tensors beyond its half gigabyte gives a block of 40 auxiliary functions, and a
+      !! spherical auxiliary basis, which holds the Cartesian tensor and its spherical fold at once, 20. Without a
+      !! cap (the host: unknown, so it fits) it is the naux/4 default.
+      type(error_type), allocatable, intent(out) :: error
+      integer, parameter :: N = 100, NAUX = 4000
+      integer(int64), parameter :: PER_Q = 8_int64*N*N, FIXED = 512_int64*1024*1024
+      integer :: cart, sph, free_block
+
+      call device_memory_set_cap(FIXED + 40_int64*PER_Q)
+      cart = scf_df_choose_setup_block(N, NAUX, .false.)
+      sph = scf_df_choose_setup_block(N, NAUX, .true.)
+      call device_memory_set_cap(0_int64)
+      free_block = scf_df_choose_setup_block(N, NAUX, .false.)
+      call global_logger%info("tddft df setup block under a cap: cartesian "//to_string(cart)//", spherical "// &
+                              to_string(sph)//", uncapped "//to_string(free_block))
+      call check(error, cart == 40, "the Cartesian setup block under a cap of 40 tensors is "//to_string(cart))
+      if (allocated(error)) return
+      call check(error, sph == 20, "the spherical setup block is not half of it: "//to_string(sph))
+      if (allocated(error)) return
+      call check(error, free_block == NAUX/4, "no cap on the host is not the naux/4 default: "//to_string(free_block))
+   end subroutine test_setup_block
 
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error
@@ -469,7 +610,7 @@ contains
       if (allocated(error)) return
       call refuse_other_basis(error)
       if (allocated(error)) return
-      ! The refusal plumbing for a device without room: the cap is below the fixed reserve (RESERVE, 512 MiB, plus
+      ! The refusal plumbing for a device without room: the cap is below the fixed reserve (DF_RESERVE, 512 MiB, plus
       ! the 256 MiB cuBLAS workspace, both in tddft_df_reserve), so any molecule is refused, with the sizes in the message and the fit left intact (it solves again after). That the
       ! refusal threshold is sized right is not checked here.
       call device_memory_set_cap(600000000_int64)
