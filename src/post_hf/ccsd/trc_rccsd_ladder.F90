@@ -194,10 +194,12 @@
 !     R(i,j,a,b) = sum_cd (ac|bd) t(i,j,c,d)         without `amps`
 !     R(i,j,a,b) = sum_cd Wvvvv(a,b,c,d) t(i,j,c,d)  with `amps`, whose t1 makes the dressing
 ! The CCSD Lambda equations need the first on l2 (undressed b_vv); by (ac|bd) = (ca|db) it is also
-! sum_ab l2(i,j,a,b) (ac|bd) read at (i,j,c,d). The assembled form, the direct form, the half form's general path
-! and the dressing are exact for ANY t. The half form's one-contraction path (`tau_symmetric`) and the dressed
-! correction that goes with it contract (t(i,j,c,d) + t(j,i,d,c))/2: right for a t with t(j,i,d,c) = t(i,j,c,d),
-! which l2 has.
+! sum_ab l2(i,j,a,b) (ac|bd) read at (i,j,c,d). Without `tau_symmetric` every form, dressed or not, is exact for
+! ANY t. With it, the half form's one-contraction path and the dressed correction that goes with it contract
+! (t(i,j,c,d) + t(j,i,d,c))/2: right for a t with t(j,i,d,c) = t(i,j,c,d), which l2 has. The assembled and direct
+! forms have no such path, and this routine refuses the flag there (unlike `rccsd_ladder_pp`, which ignores it):
+! AUTO picks the form by size and budget, so ignoring it would make the result of a t without the symmetry depend
+! on the system and the memory. A caller of a symmetric t passes tau_symmetric = (ls%form == RCCSD_LADDER_HALF).
 !
 ! SHARES (over the ranks of a run, trc_rccsd_driver RANKS). The half form's passes run over d = ls%d_lo..ls%d_hi
 ! (`init` sets 1..nv; an empty range, d_hi < d_lo, runs no pass), and the ladder is linear in that range: N, N' and the
@@ -1174,8 +1176,11 @@ contains
       !!
       !! `t(i,j,a,b)` must be present on the device and current there, as must `amps` when given. Pass a whole
       !! array or a contiguous part of one: for anything else the compiler passes an unmapped temporary. It must not
-      !! be `lad%h`. `tau_symmetric` (default false) as for `rccsd_ladder_pp`: set it only when
-      !! t(j,i,d,c) = t(i,j,c,d). The whole ladder only: a scratch cut to a rank's share is refused.
+      !! be `lad%h`: the routine zeroes `lad%h` before it reads t, and nothing checks this. `tau_symmetric`
+      !! (default false) takes the half form's one-contraction path, which gives the ladder of
+      !! (t(i,j,c,d) + t(j,i,d,c))/2, so set it only when t(j,i,d,c) = t(i,j,c,d); t itself is not checked. It is
+      !! refused unless `ls%form` is RCCSD_LADDER_HALF (module header, ANY TENSOR). The whole ladder only: a scratch
+      !! cut to a rank's share is refused.
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in), contiguous :: t(:, :, :, :)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
@@ -1196,6 +1201,10 @@ contains
       end if
       if (ls%d_lo /= 1 .or. ls%d_hi /= ints%nv) then
          call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the ladder of a tensor takes no share of the d range")
+         return
+      end if
+      if (sym .and. ls%form /= RCCSD_LADDER_HALF) then
+         call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: tau_symmetric on a tensor needs the half form")
          return
       end if
       if (present(amps)) then
