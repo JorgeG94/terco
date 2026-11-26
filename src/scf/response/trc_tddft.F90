@@ -254,13 +254,14 @@ module trc_tddft
    use trc_mult_kernels, only: MULT_LMAX
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_error, only: error_t, ERROR_GENERIC, ERROR_VALIDATION
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
+   use trc_device_memory, only: device_memory_free_bytes
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_LDA, XC_FAMILY_GGA
-   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many_lent
+   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many_lent, trc_xc_fxc_vec_bytes
    use trc_scf_df, only: df_jk_t
-   use trc_tddft_df, only: df_excitation_t, tddft_df_combine_tda, tddft_df_combine_tda_j, tddft_df_combine_rpa, &
-                           tddft_df_combine_rpa_j, ST_DF_FXC, ST_DF_REST
+   use trc_tddft_df, only: ST_DF_HOST, df_excitation_t, df_request_t, tddft_df_combine_tda, tddft_df_combine_tda_j, &
+                           tddft_df_combine_rpa, tddft_df_combine_rpa_j, ST_DF_FXC, ST_DF_REST
    implicit none
    private
 
@@ -280,6 +281,12 @@ module trc_tddft
    real(dp), parameter :: PRECOND_FLOOR = 1.0e-4_dp
    !! The preconditioner's denominator (d - w) is kept at least this far from
    !! zero, sign preserved.
+   integer, parameter :: XC_VECTORS_RESERVED = 2
+   !! Trial densities' worth of f_xc scratch the fitted route leaves free on the device beside its MO blocks.
+   integer(int64), parameter :: XC_CACHE_SHARE = 4_int64
+   !! The XC cache of a fitted solve takes at most this fraction of the free device memory.
+   integer(int64), parameter :: XC_DF_FLOOR = 2147483648_int64
+   !! Device bytes the XC cache of a fitted solve always leaves free (the MO blocks' minimum, the libraries).
    integer, parameter :: NRAND_PROBE = 2
    !! Random vectors in the probe, beside the unit vectors of the next-lowest
    !! orbital-energy differences.
@@ -409,6 +416,11 @@ module trc_tddft
       !! (sqrt(2) sum_ia (X + Y)_ia <i|r|a>).
       real(dp), allocatable :: osc(:)
       !! (nroots) oscillator strengths (2/3) w |mu|^2.
+      character(len=24), allocatable :: step_names(:)
+      !! The density-fitted route's step table rows (`df_excitation_t%tbl`: MO blocks, J, K1, K2, f_xc, host work),
+      !! read back when the solve ends; not allocated for a four-centre solve.
+      real(dp), allocatable :: step_t(:)
+      !! Seconds of each row of `step_names`.
       real(dp), allocatable :: resid(:)
       !! (nroots) the residual norms at the end (||A X - w X||; for the RPA
       !! the (X, Y) residual of `conv_tol`), from the solver's own
@@ -517,6 +529,14 @@ module trc_tddft
       !! The two-electron products come from the density-fitted MO blocks `dfx` (module header, THE FITTED ROUTE),
       !! not from the four-centre engine: `setup` was given the fit.
       type(df_excitation_t) :: dfx
+      integer :: xc_cap = 0
+      !! Vectors the fitted route's XC scratch below has room for.
+      integer(int64) :: xc_vec_bytes = 0
+      !! Device bytes one trial density in flight costs the f_xc response (X and Z tiles over the resident region, ...).
+      real(dp), allocatable :: xc_half(:), xc_tmat(:), xc_vxc(:)
+      !! The AO transition densities (nao, nao, nvec), the XC response (nao, nao, nvec) and the (nao, nvir) or
+      !! (nocc, nao) half-transforms (per vector), allocated once and grown, not once per application;
+      !! device-resident.
    contains
       procedure :: setup => tddft_op_setup
       procedure :: apply => tddft_op_apply
@@ -620,6 +640,7 @@ contains
       type(trc_tddft_options_t) :: probe
       character(len=256) :: reason
       integer :: n, nocc, nvir, i, a
+      integer(int64) :: free_dev, cache_cap
 
       call this%release()
       reason = ""
@@ -660,11 +681,33 @@ contains
          this%cx = ref%func%exx
       end if
       !$acc enter data copyin(this%cocc, this%cvir, this%de)
-      if (this%dft) call this%cache%setup(b, xg, ref%func, ref%dmat, la)
+      if (this%dft) then
+         if (present(dfjk)) then
+            ! The fit's blocks and the cached basis values share what the SCF left. The cache takes at most
+            ! 1/XC_CACHE_SHARE of it and always leaves XC_DF_FLOOR bytes (the blocks' minimum and the libraries'): unbounded
+            ! it took every free byte after a 40-water SCF and the blocks found none (def2-SVP, 32 GB V100, 17 GB of
+            ! packed B beside it). What does not stay resident is collocated again in every application.
+            free_dev = device_memory_free_bytes()
+            if (free_dev >= 0) then
+               cache_cap = min(free_dev/XC_CACHE_SHARE, max(free_dev - XC_DF_FLOOR, 0_int64))
+               call this%cache%setup(b, xg, ref%func, ref%dmat, la, res_budget=cache_cap)
+            else
+               call this%cache%setup(b, xg, ref%func, ref%dmat, la)
+            end if
+         else
+            call this%cache%setup(b, xg, ref%func, ref%dmat, la)
+         end if
+         if (this%has_budget) then
+            this%xc_vec_bytes = trc_xc_fxc_vec_bytes(b, xg, this%cache, this%budget)
+         else
+            this%xc_vec_bytes = trc_xc_fxc_vec_bytes(b, xg, this%cache)
+         end if
+      end if
       this%napply_screened = 0
       this%ready = .true.
       if (present(dfjk)) then
-         call this%dfx%setup(dfjk, la, this%cocc, this%cvir, this%cx /= 0.0_dp, tddft_df_reserve(this), err)
+         call this%dfx%setup(dfjk, la, this%cocc, this%cvir, df_request_t(this%cx /= 0.0_dp, &
+                             this%rpa .and. this%cx /= 0.0_dp, this%nvec_max, tddft_df_reserve(this)), err)
          if (err%has_error()) then
             call this%release()
             return
@@ -690,6 +733,10 @@ contains
       if (this%dft) then
          n2 = int(this%nao, int64)**2
          bytes = bytes + 8_int64*3_int64*n2*nv
+         ! The response's X and Z tiles over the cached basis values: huge per vector (2 T doubles, T the resident
+         ! region), so the blocks must leave room for a few at once. Fewer in flight only means more passes over
+         ! the resident region; none is an allocation failure (w30 def2-SVP RPA died there).
+         bytes = bytes + this%xc_vec_bytes*min(nv, int(XC_VECTORS_RESERVED, int64))
       end if
    end function tddft_df_reserve
 
@@ -973,57 +1020,85 @@ contains
       deallocate (tmat, gmat, vxc, half, half_occ)
    end subroutine tddft_op_apply_rpa
 
-   subroutine tddft_df_xc_density(this, la, nvec, x, symmetrise, tmat)
-      !! tmat(:, :, k) = C_occ x_k C_vir^T, the AO transition densities the XC kernel takes, on the device;
-      !! `symmetrise` replaces each by its symmetric part (the RPA's Ts). `x` is device-resident.
+   subroutine tddft_df_xc_scratch(this, nvec)
+      !! Room, on the device, for `nvec` vectors' AO transition densities, XC responses and half-transforms.
+      type(trc_tddft_op_t), intent(inout) :: this
+      integer, intent(in) :: nvec
+      integer(int64) :: n2, nh
+      if (nvec <= this%xc_cap) return
+      call tddft_df_xc_free(this)
+      n2 = int(this%nao, int64)**2
+      nh = int(this%nao, int64)*max(this%nvir, this%nocc)
+      allocate (this%xc_tmat(n2*nvec), this%xc_vxc(n2*nvec), this%xc_half(nh*nvec))
+      !$acc enter data create(this%xc_tmat, this%xc_vxc, this%xc_half)
+      this%xc_cap = nvec
+   end subroutine tddft_df_xc_scratch
+
+   subroutine tddft_df_xc_free(this)
+      type(trc_tddft_op_t), intent(inout) :: this
+      if (allocated(this%xc_tmat)) then
+         !$acc exit data delete(this%xc_tmat, this%xc_vxc, this%xc_half)
+         deallocate (this%xc_tmat, this%xc_vxc, this%xc_half)
+      end if
+      this%xc_cap = 0
+   end subroutine tddft_df_xc_free
+
+   subroutine tddft_df_xc_density(this, la, nvec, x, symmetrise)
+      !! this%xc_tmat(:, :, k) = C_occ x_k C_vir^T, the AO transition densities the XC kernel takes, on the device, for
+      !! every vector in two batched GEMMs; `symmetrise` replaces each by its symmetric part (the RPA's Ts).
+      !! `x` is device-resident.
       type(trc_tddft_op_t), intent(inout) :: this
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: nvec
-      real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
+      real(dp), intent(in) :: x(this%nocc*this%nvir, nvec)
       logical, intent(in) :: symmetrise
-      real(dp), intent(inout) :: tmat(this%nao, this%nao, nvec)
-      real(dp), allocatable :: half(:, :)
-      integer :: k
+      type(trc_gemm_batch_t) :: gb
+      integer(int64) :: n8, no8, nv8
 
-      allocate (half(this%nao, this%nvir))
-      !$acc enter data create(half)
-      do k = 1, nvec
-         call la%gemm_mat(this%cocc, x(:, :, k), half)
-         call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
-      end do
-      if (symmetrise) call tddft_split_density(this%nao, nvec, .false., tmat)
-      !$acc exit data delete(half)
-      deallocate (half)
+      n8 = this%nao
+      no8 = this%nocc
+      nv8 = this%nvir
+      call tddft_df_xc_scratch(this, nvec)
+      ! half(mu, a, k) = sum_i C_o(mu, i) x(i, a, k), then T_k = half_k C_v^T
+      gb = trc_gemm_batch(this%nao, this%nvir, this%nocc, nvec, lda=this%nao, ldb=this%nocc, ldc=this%nao, &
+                          sa=0_int64, sb=no8*nv8, sc=n8*nv8)
+      call la%gemm_batched(gb, this%cocc, x, this%xc_half)
+      gb = trc_gemm_batch(this%nao, this%nao, this%nvir, nvec, lda=this%nao, ldb=this%nao, ldc=this%nao, &
+                          sa=n8*nv8, sb=0_int64, sc=n8*n8, transb="T")
+      call la%gemm_batched(gb, this%xc_half, this%cvir, this%xc_tmat)
+      if (symmetrise) call tddft_split_density(this%nao, nvec, .false., this%xc_tmat)
    end subroutine tddft_df_xc_density
 
-   subroutine tddft_df_add_xc(this, b, la, xg, nvec, tmat, alpha, ax)
-      !! ax(:, :, k) += alpha C_occ^T f_xc[tmat_k] C_vir for every vector: the XC kernel on the grid, exactly as the
-      !! four-centre matvec applies it (it is not fitted). `ax` is device-resident (the first nvec slabs).
+   subroutine tddft_df_add_xc(this, b, la, xg, nvec, alpha, ax)
+      !! ax(:, :, k) += alpha C_occ^T f_xc[T_k] C_vir for every vector (T_k = this%xc_tmat, from
+      !! `tddft_df_xc_density`): the XC kernel on the grid, exactly as the four-centre matvec applies it (it is not
+      !! fitted), the two MO transforms as two batched GEMMs. `ax` is device-resident (the first nvec slabs).
       type(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(trc_xc_grid_t), intent(in) :: xg
       integer, intent(in) :: nvec
-      real(dp), intent(inout) :: tmat(this%nao, this%nao, nvec)
       real(dp), intent(in) :: alpha
-      real(dp), intent(inout) :: ax(this%nocc, this%nvir, *)
-      real(dp), allocatable :: vxc(:, :, :), half_occ(:, :)
-      integer :: k
+      real(dp), intent(inout) :: ax(this%nocc*this%nvir, *)
+      type(trc_gemm_batch_t) :: gb
+      integer(int64) :: n8, no8, nv8
 
-      allocate (vxc(this%nao, this%nao, nvec), half_occ(this%nocc, this%nao))
-      !$acc enter data create(vxc, half_occ)
+      n8 = this%nao
+      no8 = this%nocc
+      nv8 = this%nvir
       ! Without a budget the routine's default keeps every vector in one pass.
       if (this%has_budget) then
-         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, this%xc_tmat, this%xc_vxc, this%budget, la)
       else
-         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
+         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, this%xc_tmat, this%xc_vxc, la=la)
       end if
-      do k = 1, nvec
-         call la%gemm_mat(this%cocc, vxc(:, :, k), half_occ, transa="T")
-         call la%gemm_mat(half_occ, this%cvir, ax(:, :, k), alpha=alpha, beta=1.0_dp)
-      end do
-      !$acc exit data delete(vxc, half_occ)
-      deallocate (vxc, half_occ)
+      ! half(i, mu, k) = C_o^T V_k, then ax_k += alpha half_k C_v
+      gb = trc_gemm_batch(this%nocc, this%nao, this%nao, nvec, lda=this%nao, ldb=this%nao, ldc=this%nocc, &
+                          sa=0_int64, sb=n8*n8, sc=no8*n8, transa="T")
+      call la%gemm_batched(gb, this%cocc, this%xc_vxc, this%xc_half)
+      gb = trc_gemm_batch(this%nocc, this%nvir, this%nao, nvec, lda=this%nocc, ldb=this%nao, ldc=this%nocc, &
+                          sa=no8*n8, sb=0_int64, sc=no8*nv8)
+      call la%gemm_batched(gb, this%xc_half, this%cvir, ax, alpha=alpha, beta=1.0_dp)
    end subroutine tddft_df_add_xc
 
    subroutine tddft_op_apply_df(this, b, la, nvec, x, ax, xg)
@@ -1040,7 +1115,7 @@ contains
       real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
       real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec)
       type(trc_xc_grid_t), intent(in), optional :: xg
-      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :), tmat(:, :, :)
+      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :)
       integer :: nov
       type(timer_type) :: tc
 
@@ -1061,12 +1136,8 @@ contains
       call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
       if (this%dft) then
          call this%dfx%tbl%step_on(la, ST_DF_FXC, tc)
-         allocate (tmat(this%nao, this%nao, nvec))
-         !$acc enter data create(tmat)
-         call tddft_df_xc_density(this, la, nvec, x, .false., tmat)
-         call tddft_df_add_xc(this, b, la, xg, nvec, tmat, 2.0_dp, ax)
-         !$acc exit data delete(tmat)
-         deallocate (tmat)
+         call tddft_df_xc_density(this, la, nvec, x, .false.)
+         call tddft_df_add_xc(this, b, la, xg, nvec, 2.0_dp, ax)
          call this%dfx%tbl%step_off(la, ST_DF_FXC, tc)
       end if
       call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
@@ -1093,7 +1164,7 @@ contains
       real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
       real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec, 2)
       type(trc_xc_grid_t), intent(in), optional :: xg
-      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :), tmat(:, :, :)
+      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :)
       integer :: nov
       type(timer_type) :: tc
 
@@ -1114,12 +1185,8 @@ contains
       call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
       if (this%dft) then
          call this%dfx%tbl%step_on(la, ST_DF_FXC, tc)
-         allocate (tmat(this%nao, this%nao, nvec))
-         !$acc enter data create(tmat)
-         call tddft_df_xc_density(this, la, nvec, x, .true., tmat)
-         call tddft_df_add_xc(this, b, la, xg, nvec, tmat, 4.0_dp, ax)
-         !$acc exit data delete(tmat)
-         deallocate (tmat)
+         call tddft_df_xc_density(this, la, nvec, x, .true.)
+         call tddft_df_add_xc(this, b, la, xg, nvec, 4.0_dp, ax)
          call this%dfx%tbl%step_off(la, ST_DF_FXC, tc)
       end if
       call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
@@ -1184,6 +1251,7 @@ contains
          !$acc exit data delete(this%cocc, this%cvir, this%de)
       end if
       call this%cache%release()
+      call tddft_df_xc_free(this)
       ! The step table of a fitted solve: where its matvecs spent their time.
       if (this%fitted) call this%dfx%report(sum(this%dfx%tbl%t))
       call this%dfx%release()
@@ -1238,28 +1306,53 @@ contains
       !! the first nnew columns of tc and appended to vs after column m. At most
       !! mmax - m are kept: vs has mmax columns, and when mmax is the problem
       !! dimension roundoff must not let a dependent vector past it.
+      !! The projection against the m vectors already in the subspace, the long one, is two GEMMs per
+      !! pass for every column at once (with at least two columns and two vectors); it was a dot product
+      !! per vector pair, 0.3 s of a 20-water RPA solve. Only the few survivors of this call are
+      !! projected one column at a time.
       integer, intent(in) :: nov, m, mmax, nc
       real(dp), intent(inout) :: vs(nov, *), tc(nov, nc)
       integer, intent(out) :: nnew
-      real(dp) :: n0, n1
-      real(dp) :: proj(max(m + nc, 1))
+      real(dp) :: n1
+      real(dp) :: n0(max(nc, 1)), projo(max(m, 1), max(nc, 1)), projn(max(nc, 1))
       integer :: j, p, q, mm
       nnew = 0
       mm = m
       do j = 1, nc
-         n0 = sqrt(sum(tc(:, j)**2))
-         if (mm >= mmax) exit
-         if (.not. (n0 > 0.0_dp)) cycle
+         n0(j) = sqrt(sum(tc(:, j)**2))
+      end do
+      if (m >= 2 .and. nc >= 2) then
          do p = 1, 2
-            do q = 1, mm
-               proj(q) = sum(vs(:, q)*tc(:, j))
+            call pic_gemm(vs(1:nov, 1:m), tc(:, 1:nc), projo(1:m, 1:nc), "T", "N", 1.0_dp, 0.0_dp)
+            call pic_gemm(vs(1:nov, 1:m), projo(1:m, 1:nc), tc(:, 1:nc), "N", "N", -1.0_dp, 1.0_dp)
+         end do
+      else
+         ! A GEMM with one column or one vector is a GEMV: kept off BLAS as a guard for the device build, which loads
+         ! two OpenMP runtimes (it crashed in MKL's threaded GEMV once).
+         do j = 1, nc
+            do p = 1, 2
+               do q = 1, m
+                  projo(q, 1) = sum(vs(:, q)*tc(:, j))
+               end do
+               do q = 1, m
+                  tc(:, j) = tc(:, j) - projo(q, 1)*vs(:, q)
+               end do
             end do
-            do q = 1, mm
-               tc(:, j) = tc(:, j) - proj(q)*vs(:, q)
+         end do
+      end if
+      do j = 1, nc
+         if (mm >= mmax) exit
+         if (.not. (n0(j) > 0.0_dp)) cycle
+         do p = 1, 2
+            do q = m + 1, mm
+               projn(q - m) = sum(vs(:, q)*tc(:, j))
+            end do
+            do q = m + 1, mm
+               tc(:, j) = tc(:, j) - projn(q - m)*vs(:, q)
             end do
          end do
          n1 = sqrt(sum(tc(:, j)**2))
-         if (.not. (n1 > DROP_REL*n0)) cycle
+         if (.not. (n1 > DROP_REL*n0(j))) cycle
          mm = mm + 1
          nnew = nnew + 1
          vs(:, mm) = tc(:, j)/n1
@@ -1501,7 +1594,8 @@ contains
       real(dp) :: buffer_threshold, dx, dy, nrm
       integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0, nkc, xiter
       type(tddft_window_t) :: win
-      logical :: collapsed
+      logical :: collapsed, have_th
+      type(timer_type) :: th
       character(len=256) :: reason
       character(len=1024) :: logline
       logical :: done, probed
@@ -1525,13 +1619,17 @@ contains
       nnew = sp%m
       res%iterations = 0
       res%nmatvec = 0
+      have_th = .false.
 
       do
          ! (A+B) and (A-B) on the vectors added since the last pass: one integral pass.
          if (nnew > 0) then
             c0 = sp%m - nnew + 1
             allocate (prod(nocc, nvir, nnew, 2))
+            if (op%fitted .and. have_th) call op%dfx%tbl%add_time(ST_DF_HOST, th%get_elapsed_time())
             call op%apply_rpa(b, eri, la, nnew, sp%vs(:, c0:sp%m), prod, xg)
+            call th%start()
+            have_th = .true.
             sp%avs(:, c0:sp%m) = reshape(prod(:, :, :, 1), [nov, nnew])
             sp%ams(:, c0:sp%m) = reshape(prod(:, :, :, 2), [nov, nnew])
             deallocate (prod)
@@ -1654,6 +1752,7 @@ contains
          sp%m = sp%m + nnew
       end do
 
+      if (op%fitted .and. have_th) call op%dfx%tbl%add_time(ST_DF_HOST, th%get_elapsed_time())
       if (done) then
          call tddft_report_window(res, win%nopen)
          res%space = sp%m
@@ -1764,6 +1863,11 @@ contains
          return
       end if
       call tddft_solve_core(b, pl, eri, la, op, opts, res, xg)
+      if (allocated(op%dfx%tbl%names)) then
+         allocate (res%step_names(size(op%dfx%tbl%names)), res%step_t(size(op%dfx%tbl%t)))
+         res%step_names = op%dfx%tbl%names
+         res%step_t = op%dfx%tbl%t
+      end if
       call op%restore_fit(dfjk)
    end subroutine trc_tddft_solve_rks_fitted
 
@@ -1788,8 +1892,9 @@ contains
       integer :: xiter
       integer(default_int) :: linfo
       character(len=1024) :: logline
-      logical :: done, probed
+      logical :: done, probed, have_th
       real(dp) :: buffer_threshold
+      type(timer_type) :: th
 
       op%density_screen = opts%density_screen
       if (.not. opts%density_screen .and. .not. op%fitted) call global_logger%warning(SCREEN_OFF_MSG)
@@ -1864,6 +1969,7 @@ contains
       done = .false.
       xiter = 0
       win%nopen = 0
+      have_th = .false.
 
       if (.not. opts%tda) then
          call tddft_rpa_iterate(b, eri, la, op, xg, opts, sp, res)
@@ -1884,7 +1990,10 @@ contains
       do
          ! A on the vectors added since the last pass: one integral pass.
          if (nnew > 0) then
+            if (op%fitted .and. have_th) call op%dfx%tbl%add_time(ST_DF_HOST, th%get_elapsed_time())
             call op%apply(b, eri, la, nnew, sp%vs(:, sp%m - nnew + 1:sp%m), sp%avs(:, sp%m - nnew + 1:sp%m), xg)
+            call th%start()
+            have_th = .true.
             res%nmatvec = res%nmatvec + nnew
             if (.not. all(ieee_is_finite(sp%avs(:, sp%m - nnew + 1:sp%m)))) then
                call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
@@ -2009,6 +2118,7 @@ contains
          sp%m = sp%m + nnew
       end do
 
+      if (op%fitted .and. have_th) call op%dfx%tbl%add_time(ST_DF_HOST, th%get_elapsed_time())
       if (done) then
          call tddft_report_window(res, win%nopen)
          if (wsub(1) <= 0.0_dp) then

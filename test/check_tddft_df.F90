@@ -13,7 +13,10 @@ module check_tddft_df_suite
    !!  4. the blocked paths against the unblocked one: chunks of seven auxiliary functions with every block
    !!     resident, with none resident (every chunk rebuilt from the packed B inside each application) and with
    !!     some resident, to round-off (`tddft_df_set_blocks`);
-   !!  5. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
+   !!  5. more roots than one pass of vectors holds (NROOTS_MANY gives 18 guesses, more than the 16 vectors of a
+   !!     group and not a multiple of it) with chunks that leave a partial last chunk, resident, rebuilt and mixed,
+   !!     against the same solve unblocked, to round-off;
+   !!  6. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
    !!     check -- it was overwritten by an operator-precedence slip), a fit-less solve, an unset fit, a fit of another
    !!     basis, and a device without room for the MO blocks (`device_memory_set_cap`), after which the fit is intact
    !!     and solves again. A second ctest entry of the water Cartesian HF case runs the whole program with
@@ -61,6 +64,9 @@ module check_tddft_df_suite
    !! lowest roots is 1.0e-5 to 1.6e-5 (measured, water and formamide, HF/PBE/B3LYP); a wrong operator (a missing
    !! exchange term, a wrong weight) moves them by 1e-2 or more.
    integer, parameter :: NROOTS = 3
+   integer, parameter :: NROOTS_MANY = 9
+   !! 2 NROOTS_MANY = 18 guess vectors in the first application: two groups (16 + 2).
+   real(dp), parameter :: TOL_GROUP_OMEGA = 1.0e-12_dp
    real(dp), parameter :: THRESH = 1.0e-12_dp
 
    character(len=256) :: xyz_arg = "water.xyz"
@@ -116,6 +122,7 @@ contains
                   new_unittest("fitted RPA energies and ||Y||^2 vs pyscf", test_rpa), &
                   new_unittest("fitted roots within the fitting error of the four-centre ones", test_vs_exact), &
                   new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
+                  new_unittest("several vector groups with partial chunks equal the unblocked solve", test_groups), &
                   new_unittest("refusals", test_refusals), &
                   new_unittest("release", test_release) &
                   ]
@@ -347,6 +354,56 @@ contains
          if (allocated(error)) return
       end do
    end subroutine test_blocks
+
+   subroutine test_groups(error)
+      !! The first application carries 18 vectors (two groups of the fitted products, 16 and 2) and the chunk size
+      !! leaves a partial last chunk: every block resident, none resident, the first chunks resident, in the TDA
+      !! and the RPA, against the unblocked solve of the same roots.
+      type(error_type), allocatable, intent(out) :: error
+      integer, parameter :: RESIDENT(3) = [-1, 0, 2]
+      type(trc_tddft_run_result_t) :: ref_tda, ref_rpa, tda, rpa
+      type(trc_tddft_run_options_t) :: o
+      real(dp) :: dom
+      integer :: k, n, naux, npack, blk
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call fx%dfjk%dims(n, naux, npack)
+      blk = 7
+      do while (mod(naux, blk) == 0)
+         blk = blk + 1
+      end do
+      o = fx%opts
+      o%nroots = NROOTS_MANY
+      o%tda = .true.
+      call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, ref_tda, fx%dfjk)
+      o%tda = .false.
+      call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, ref_rpa, fx%dfjk)
+      call check(error, ref_tda%converged .and. ref_rpa%converged, "the unblocked many-root solves failed: "// &
+                 ref_tda%err%get_message()//ref_rpa%err%get_message())
+      if (allocated(error)) return
+      call check(error, ref_tda%td%nmatvec > 16 .and. ref_rpa%td%nmatvec > 16, "fewer than 17 vectors: one group only")
+      if (allocated(error)) return
+      do k = 1, size(RESIDENT)
+         call tddft_df_set_blocks(blk, RESIDENT(k)*blk)
+         o%tda = .true.
+         call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, tda, fx%dfjk)
+         o%tda = .false.
+         call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, rpa, fx%dfjk)
+         call tddft_df_set_blocks(0, -1)
+         call check(error, tda%converged .and. rpa%converged, "a blocked many-root solve failed: "// &
+                    tda%err%get_message()//rpa%err%get_message())
+         if (allocated(error)) return
+         dom = max(maxval(abs(tda%omega - ref_tda%omega)), maxval(abs(rpa%omega - ref_rpa%omega)))
+         call global_logger%info("tddft df groups (chunk "//to_string(blk)//" of "//to_string(naux)//", resident "// &
+                                 to_string(RESIDENT(k)*blk)//"): max|d omega| "//to_string(dom, "es10.2"))
+         call check(error, dom < TOL_GROUP_OMEGA, "grouped blocked omega vs unblocked, "//to_string(dom, "es10.2"))
+         if (allocated(error)) return
+         dom = max(maxval(abs(tda%osc - ref_tda%osc)), maxval(abs(rpa%ynorm - ref_rpa%ynorm)))
+         call check(error, dom < TOL_BLOCK_OSC, "grouped blocked f or ||Y||^2 vs unblocked, "//to_string(dom, "es10.2"))
+         if (allocated(error)) return
+      end do
+   end subroutine test_groups
 
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error

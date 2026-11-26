@@ -25,7 +25,7 @@ module trc_tddft_df
    !! nothing here, `df_jk_t` has folded it into B's auxiliary index):
    !!
    !!     boo(i, j, Q)  = B^Q_ij        (nocc, nocc, np)   only with exchange
-   !!     bov(i, a, Q)  = B^Q_ia        (nocc, nvir, np)
+   !!     bov(Q, i, a)  = B^Q_ia        (np, nocc, nvir)
    !!     bvv(a, Q, b)  = B^Q_ab        (nvir, np, nvir)   only with exchange
    !!
    !! (a pure functional needs bov alone: nocc nvir naux doubles). They come
@@ -33,21 +33,27 @@ module trc_tddft_df
    !! batched GEMMs against C_v and C_o -- the construction `df_rotation_t`
    !! uses for the CPHF Hessian -- and no AO quantity exists after that.
    !!
-   !! ONE APPLICATION on g <= vmax trial vectors x (nocc, nvir, g), per chunk,
-   !! all GEMMs on the device through `trc_linalg_t`:
+   !! ONE APPLICATION on nvec trial vectors x (nocc, nvir, nvec): the chunks are the outer loop (a chunk that is
+   !! not resident is rebuilt once, into the slot) and the groups of at most VMAX vectors the inner one; per
+   !! chunk and group, all GEMMs on the device through `trc_linalg_t`:
    !!
-   !!   J   t = bov^T x (nvec at once), J += bov t               2 GEMMs
+   !!   J   t = bov x (the group at once), J += bov^T t           2 GEMMs
    !!   K1  W(i, k, b, Q) = sum_j boo(j, i, Q) x(j, b, k)        1 batched GEMM
    !!       (x reordered once to (j, k, b), shared by every Q), then
    !!       K1(i, k, a) += W((i, k), (b, Q)) bvv((b, Q), a)       1 GEMM
-   !!   K2  per vector: R(b, Q, a) = sum_j x(j, b) bov(j, a, Q)  1 batched GEMM
-   !!       (x^T shared by every Q), K2(:, :, k) += bov((i), (b, Q)) R   1 GEMM
+   !!   K2  u(Q, (j, k), i) = sum_b bov(Q, i, b) x(b, (j, k))    1 batched GEMM
+   !!       (batched over i; x reordered once to (b, j, k)), then
+   !!       K2((k, i), a) += u((Q, j), (k, i))^T bov((Q, j), a)   1 GEMM
    !!
    !! so the contraction over the auxiliary index is always INSIDE one GEMM
-   !! (the (b, Q) pair is one contiguous index of both operands) and there is
-   !! no reduction kernel. Flops per chunk and vector 2 np nocc nvir (2 nocc +
-   !! 2 nvir) for K1, the same for K2, and 4 np nocc nvir for J. All the
-   !! vectors of a call share one pass over the blocks.
+   !! (the (b, Q) pair of bvv, the (Q, j) pair of the K2 products is one contiguous index
+   !! of both operands) and there is no reduction kernel. `bov` is stored with the
+   !! auxiliary index FASTEST, (Q, i, a): that makes the K2 pair (Q, j) contiguous, and J's two GEMMs plain
+   !! ones. K2 contracts x with the SMALL index first (the o^2 v form): 4 np nocc^2 nvir flops per chunk and
+   !! vector against the 4 np nocc nvir^2 of contracting a virtual pair first, nvir/nocc (about 4) times fewer. K1
+   !! has no such form: 2 np nocc nvir (nocc + nvir), 4 np nocc nvir for J. Every application is
+   !! ONE launch of each product per chunk and group of at most VMAX vectors, and the chunks are the
+   !! outer loop, so a chunk that has to be rebuilt is built once per application, not once per group.
    !!
    !! MEMORY AND BLOCKING. bvv is nvir^2 naux doubles and does not always fit
    !! beside the packed B the SCF keeps. `setup` sizes, from the device's free
@@ -78,19 +84,20 @@ module trc_tddft_df
    implicit none
    private
 
-   public :: df_excitation_t, tddft_df_set_blocks
+   public :: df_excitation_t, df_request_t, tddft_df_set_blocks
    public :: tddft_df_combine_tda, tddft_df_combine_tda_j, tddft_df_combine_rpa, tddft_df_combine_rpa_j
-   public :: ST_DF_SETUP, ST_DF_STREAM, ST_DF_J, ST_DF_K1, ST_DF_K2, ST_DF_FXC, ST_DF_REST
+   public :: ST_DF_SETUP, ST_DF_STREAM, ST_DF_J, ST_DF_K1, ST_DF_K2, ST_DF_FXC, ST_DF_REST, ST_DF_HOST
 
    integer, parameter :: ST_DF_SETUP = 1, ST_DF_STREAM = 2, ST_DF_J = 3, ST_DF_K1 = 4, ST_DF_K2 = 5, &
-                         ST_DF_FXC = 6, ST_DF_REST = 7, N_STEPS = 7
+                         ST_DF_FXC = 6, ST_DF_REST = 7, ST_DF_HOST = 8, N_STEPS = 8
    !! The rows of `df_excitation_t%tbl`: the MO blocks at setup, the blocks rebuilt inside applications, the
    !! Coulomb, (ij|ab) and (ib|ja) products, the XC kernel (filled by trc_tddft) and everything else of an
-   !! application (reorderings, combinations, the diagonal, the transfers of the trial vectors).
+   !! application (reorderings, combinations, the diagonal, the transfers of the trial vectors) and the Davidson
+   !! iteration's own host work between two applications (subspace, Ritz vectors, residuals, orthogonalisation).
    character(len=24), parameter :: STEP_NAMES(N_STEPS) = [character(len=24) :: "MO blocks (setup)", &
                                                           "MO blocks (rebuilt)", "coulomb  (ia|jb)", &
                                                           "exchange (ij|ab)", "exchange (ib|ja)", &
-                                                          "xc kernel", "rest of the matvec"]
+                                                          "xc kernel", "rest of the matvec", "davidson (host)"]
 
    integer, parameter :: VMAX = 16
    !! Trial vectors per pass over the blocks: the Davidson's new vectors of an iteration are 5 to 30.
@@ -105,7 +112,7 @@ module trc_tddft_df
 
    type :: df_blocks_t
       !! The MO blocks of consecutive auxiliary functions, flat: for a chunk of np functions starting at p0,
-      !! boo (nocc, nocc, np), bov (nocc, nvir, np) and bvv (nvir, np, nvir) (module header). Resident blocks hold
+      !! boo (nocc, nocc, np), bov (np, nocc, nvir) and bvv (nvir, np, nvir) (module header). Resident blocks hold
       !! every chunk, chunk c at the offset of its first function; the slot holds one chunk at the start.
       logical :: slot = .false.
       real(dp), allocatable :: boo(:), bov(:), bvv(:)
@@ -116,7 +123,28 @@ module trc_tddft_df
       !! The sizes `choose_blocks` plans from.
       integer :: n = 0, nocc = 0, nvir = 0, naux = 0
       logical :: exchange = .false.
+      logical :: k2 = .false.
+      integer :: nvec_max = VMAX
    end type df_plan_t
+
+   type :: df_request_t
+      !! What the caller will ask of the blocks.
+      logical :: exchange = .false.
+      !! Exchange blocks (a hybrid reference).
+      logical :: k2 = .false.
+      !! K2 products will be asked for (the RPA with exchange): the K2 scratch is allocated only then.
+      integer :: nvec_max = VMAX
+      !! The most trial vectors one application will be given; sizes the per-group scratch reserve.
+      integer(int64) :: extra_bytes = 0
+      !! Device bytes left to the caller beside this object.
+   end type df_request_t
+
+   type :: df_pass_t
+      !! One chunk against one group of vectors: the chunk's first auxiliary function and size, the group's size,
+      !! its first vector and its place in the group-major scratch.
+      integer :: p0 = 1, np = 0, g = 0, g0 = 0, grp = 1
+      logical :: want_k2 = .false.
+   end type df_pass_t
 
    type :: df_excitation_t
       !! The fitted MO blocks of one fit and one set of orbitals, device-resident, and the scratch of an application.
@@ -126,8 +154,12 @@ module trc_tddft_df
       !! Auxiliary functions per chunk.
       integer :: nres = 0
       !! Auxiliary functions (a whole number of chunks, or all) whose blocks stay resident.
+      integer :: ngrp = 0
+      !! Vector groups the group-major scratch below has room for.
       logical :: exchange = .false.
       !! boo and bvv exist (a hybrid reference).
+      logical :: k2 = .false.
+      !! The K2 scratch exists (`df_request_t%k2`).
       real(dp), allocatable :: bpk(:, :)
       !! The fit's packed B, taken over from the `df_jk_t` by `setup` and handed back by `restore`; device-resident.
       real(dp), allocatable :: cmo(:, :)
@@ -136,10 +168,11 @@ module trc_tddft_df
       !! The resident chunks, and the slot a rebuilt chunk is made in (allocated only when some chunk is not resident).
       real(dp), allocatable :: tens(:, :, :), half(:)
       !! One chunk of unpacked B and its half-transform; device-resident, held only for the rebuilt chunks.
-      real(dp), allocatable :: xk(:), w(:), rk(:), tq(:), k1t(:)
-      !! An application's scratch; device-resident.
-      real(dp), allocatable :: xg(:, :), jg(:, :), k1g(:, :), k2g(:, :)
-      !! (nocc nvir, vmax): the pass's vectors and results; device-resident.
+      real(dp), allocatable :: w(:), tq(:)
+      !! An application's scratch, per chunk: the K1 and K2 intermediates and the Coulomb vector; device-resident.
+      real(dp), allocatable :: xk(:), xq(:), k1t(:), k2t(:)
+      !! Per group of at most VMAX vectors (group-major, nocc nvir VMAX each): x reordered for K1 and for K2 and
+      !! the two accumulators; device-resident, held only with exchange.
       type(step_table_t) :: tbl
    contains
       procedure :: setup => df_excitation_setup
@@ -188,7 +221,7 @@ contains
       integer, intent(out) :: qblk, nres
       type(error_t), intent(inout) :: err
       integer(int64) :: free, avail, per_res, per_apply, per_build, fixed, per_all, left
-      integer(int64) :: n8, no8, nv8, nrow, v8
+      integer(int64) :: n8, no8, nv8, nrow, v8, ngrp8
       integer :: nchunk
 
       n8 = plan%n
@@ -197,9 +230,12 @@ contains
       v8 = VMAX
       nrow = merge(no8 + nv8, no8, plan%exchange)
       per_res = 8_int64*(no8*nv8 + merge(no8*no8 + nv8*nv8, 0_int64, plan%exchange))
-      per_apply = 8_int64*(no8*v8*nv8 + merge(nv8*nv8, 0_int64, plan%exchange) + v8)
+      per_apply = 8_int64*(no8*v8*max(nv8, no8) + v8)
       per_build = 8_int64*(n8*n8 + nrow*n8)
-      fixed = 8_int64*(2_int64*no8*v8*nv8 + 4_int64*no8*nv8*v8)
+      ! The group-major scratch, for the groups of the largest application: x reordered for K1 and the K1
+      ! accumulator, and with K2 the reordering and accumulator of K2 as well.
+      ngrp8 = (max(plan%nvec_max, 1) + VMAX - 1)/VMAX
+      fixed = merge(8_int64*(2_int64 + merge(2_int64, 0_int64, plan%k2))*no8*nv8*v8*ngrp8, 0_int64, plan%exchange)
       free = device_memory_free_bytes()
       if (free < 0) free = HOST_FREE
       avail = free - RESERVE - extra
@@ -261,18 +297,18 @@ contains
       if (allocated(blocks%bvv)) deallocate (blocks%bvv)
    end subroutine free_blocks
 
-   subroutine df_excitation_setup(this, dfjk, lp, cocc, cvir, exchange, extra_bytes, err)
+   subroutine df_excitation_setup(this, dfjk, lp, cocc, cvir, req, err)
       !! The MO blocks of `dfjk`'s fit for the orbitals `cocc` (n, nocc) and `cvir` (n, nvir) (host, the fit's AO
-      !! space), exchange blocks only when `exchange`, `extra_bytes` of device memory left to the caller. The packed B
+      !! space), as `req` says (exchange blocks, K2 scratch, the largest application, the bytes left to the caller). The packed B
       !! moves from `dfjk` into this object until `restore`. `err` carries a memory refusal; nothing is taken then.
       class(df_excitation_t), intent(inout) :: this
       type(df_jk_t), intent(inout) :: dfjk
       type(trc_linalg_t), intent(inout) :: lp
       real(dp), intent(in) :: cocc(:, :), cvir(:, :)
-      logical, intent(in) :: exchange
-      integer(int64), intent(in) :: extra_bytes
+      type(df_request_t), intent(in) :: req
       type(error_t), intent(inout) :: err
       type(df_plan_t) :: plan
+      logical :: exchange
       integer(int64) :: no8, nv8, nrow
       integer :: n, naux, npack, no, nv, c, nchunk, p0, np
       type(timer_type) :: tc
@@ -291,10 +327,12 @@ contains
                       //to_string(size(cocc, 1))//" functions against the fit's "//to_string(n)//")")
          return
       end if
-      plan = df_plan_t(n, no, nv, naux, exchange)
-      call choose_blocks(plan, extra_bytes, this%qblk, this%nres, err)
+      exchange = req%exchange
+      plan = df_plan_t(n, no, nv, naux, exchange, req%k2 .and. exchange, req%nvec_max)
+      call choose_blocks(plan, req%extra_bytes, this%qblk, this%nres, err)
       if (err%has_error()) return
       this%exchange = exchange
+      this%k2 = plan%k2
       this%n = n
       this%nocc = no
       this%nvir = nv
@@ -317,8 +355,7 @@ contains
       call allocate_blocks(this%res, plan, this%nres, .false.)
       if (this%nres < naux) call allocate_blocks(this%slot, plan, this%qblk, .true.)
       allocate (this%tens(n, n, this%qblk), this%half(nrow*int(n, int64)*int(this%qblk, int64)))
-      allocate (this%xg(no*nv, VMAX), this%jg(no*nv, VMAX), this%k1g(no*nv, VMAX), this%k2g(no*nv, VMAX))
-      !$acc enter data create(this%tens, this%half, this%xg, this%jg, this%k1g, this%k2g)
+      !$acc enter data create(this%tens, this%half)
       this%ready = .true.
 
       call this%tbl%step_on(lp, ST_DF_SETUP, tc)
@@ -360,9 +397,11 @@ contains
       call scf_df_response_unpack_columns(n, this%npack, this%naux, np, p0, this%bpk, this%tens)
       ! half(p, nu q) = sum_mu C(mu, p) B^q(mu, nu), p over the occupied (and virtual) orbitals.
       call lp%gemm("T", "N", nrow, n*np, n, 1.0_dp, this%cmo, n, this%tens, n, 0.0_dp, this%half, nrow)
-      ! B^q_ia = half_o^q C_v
+      ! B^q_ia = half_o^q C_v, as (i, a, q) into the unpack scratch (free once the half-transform is made), then
+      ! turned to (q, i, a): the auxiliary index fastest makes the K2 products plain GEMMs (module header).
       gb = trc_gemm_batch(no, nv, n, np, lda=nrow, ldb=n, ldc=no, sa=nrow8*n8, sb=0_int64, sc=int(no, int64)*nv)
-      call lp%gemm_batched(gb, this%half, this%cmo(1, no + 1), blocks%bov(ov + 1))
+      call lp%gemm_batched(gb, this%half, this%cmo(1, no + 1), this%tens)
+      call lp%transpose(no*nv, np, this%tens, no*nv, blocks%bov(ov + 1), np)
       if (.not. this%exchange) return
       ! B^q_ij = half_o^q C_o
       gb = trc_gemm_batch(no, no, n, np, lda=nrow, ldb=n, ldc=no, sa=nrow8*n8, sb=0_int64, sc=int(no, int64)**2)
@@ -374,8 +413,9 @@ contains
 
    subroutine df_excitation_apply(this, lp, nvec, x, jx, k1, k2, want_k2)
       !! jx(:, k) = J[x_k] and, with exchange, k1(:, k) = K1[x_k] and (`want_k2`) k2(:, k) = K2[x_k] for the nvec
-      !! vectors x(:, k) (nocc nvir flattened), all device-resident, through passes of at most VMAX vectors over the
-      !! blocks (module header). `k1` is not touched without exchange, `k2` unless `want_k2`.
+      !! vectors x(:, k) (nocc nvir flattened), all device-resident, in one pass over the blocks: the chunks are the
+      !! outer loop and the groups of at most VMAX vectors the inner one (module header). `k1` is not touched
+      !! without exchange, `k2` unless `want_k2`.
       class(df_excitation_t), intent(inout) :: this
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nvec
@@ -384,135 +424,154 @@ contains
       real(dp), intent(inout), optional :: k1(this%nocc*this%nvir, nvec), k2(this%nocc*this%nvir, nvec)
       !! `k1` is needed with exchange, `k2` with `want_k2`; a pure functional's caller allocates neither.
       logical, intent(in) :: want_k2
-      integer :: g0, g
+      type(df_pass_t) :: pass
+      type(timer_type) :: tc
+      integer :: c, nchunk, grp, ngrp, no, nv, nov
+      logical :: resident
 
       if (.not. this%ready) error stop "trc_tddft_df: apply before setup"
-      do g0 = 0, nvec - 1, VMAX
-         g = min(VMAX, nvec - g0)
-         if (want_k2) then
-            call apply_group(this, lp, g, x(1, g0 + 1), jx(1, g0 + 1), k1(1, g0 + 1), k2(1, g0 + 1), want_k2)
-         else if (this%exchange) then
-            call apply_group(this, lp, g, x(1, g0 + 1), jx(1, g0 + 1), k1(1, g0 + 1), want_k2=want_k2)
-         else
-            call apply_group(this, lp, g, x(1, g0 + 1), jx(1, g0 + 1), want_k2=want_k2)
-         end if
-      end do
-   end subroutine df_excitation_apply
-
-   subroutine apply_group(this, lp, g, x, jx, k1, k2, want_k2)
-      !! One pass over the blocks for g <= VMAX vectors.
-      type(df_excitation_t), intent(inout) :: this
-      type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: g
-      real(dp), intent(in) :: x(this%nocc*this%nvir, g)
-      real(dp), intent(inout) :: jx(this%nocc*this%nvir, g)
-      real(dp), intent(inout), optional :: k1(this%nocc*this%nvir, g)
-      real(dp), intent(inout), optional :: k2(this%nocc*this%nvir, g)
-      logical, intent(in) :: want_k2
-      integer :: c, nchunk, p0, np, no, nv
-      integer(int64) :: no8, nv8
-      logical :: resident
-      type(timer_type) :: tc
-
+      if (want_k2 .and. .not. this%k2) error stop "trc_tddft_df: K2 asked for without df_request_t%k2"
       no = this%nocc
       nv = this%nvir
-      no8 = no
-      nv8 = nv
+      nov = no*nv
+      ngrp = (nvec + VMAX - 1)/VMAX
+      call ensure_scratch(this, ngrp)
       nchunk = (this%naux + this%qblk - 1)/this%qblk
-      if (this%exchange .and. .not. allocated(this%xk)) then
-         allocate (this%xk(no8*VMAX*nv8), this%k1t(no8*VMAX*nv8), this%w(no8*VMAX*nv8*this%qblk), &
-                   this%rk(nv8*nv8*this%qblk))
-         !$acc enter data create(this%xk, this%k1t, this%w, this%rk)
-      end if
-      if (.not. allocated(this%tq)) then
-         allocate (this%tq(this%qblk*VMAX))
-         !$acc enter data create(this%tq)
-      end if
       call this%tbl%step_on(lp, ST_DF_REST, tc)
-      call copy_vectors(no*nv, g, x, this%xg)
-      if (this%exchange) call reorder_x(no, nv, g, this%xg, this%xk)
+      if (this%exchange) then
+         do grp = 1, ngrp
+            pass%g0 = (grp - 1)*VMAX
+            pass%g = min(VMAX, nvec - pass%g0)
+            call reorder_x(no, nv, pass%g, x(1, pass%g0 + 1), this%xk((grp - 1)*nov*VMAX + 1))
+            if (want_k2) call reorder_xq(no, nv, pass%g, x(1, pass%g0 + 1), this%xq((grp - 1)*nov*VMAX + 1))
+         end do
+      end if
       call this%tbl%step_off(lp, ST_DF_REST, tc)
       do c = 1, nchunk
-         p0 = (c - 1)*this%qblk + 1
-         np = min(this%qblk, this%naux - p0 + 1)
-         resident = p0 + np - 1 <= this%nres
-         if (resident) then
-            call chunk_products(this, lp, this%res, p0, np, g, want_k2)
-         else
+         pass%p0 = (c - 1)*this%qblk + 1
+         pass%np = min(this%qblk, this%naux - pass%p0 + 1)
+         pass%want_k2 = want_k2
+         resident = pass%p0 + pass%np - 1 <= this%nres
+         if (.not. resident) then
             call this%tbl%step_on(lp, ST_DF_STREAM, tc)
-            call build_chunk(this, lp, this%slot, p0, np)
+            call build_chunk(this, lp, this%slot, pass%p0, pass%np)
             call this%tbl%step_off(lp, ST_DF_STREAM, tc)
-            call chunk_products(this, lp, this%slot, p0, np, g, want_k2)
          end if
+         do grp = 1, ngrp
+            pass%grp = grp
+            pass%g0 = (grp - 1)*VMAX
+            pass%g = min(VMAX, nvec - pass%g0)
+            if (resident) then
+               call chunk_products(this, lp, this%res, pass, x(1, pass%g0 + 1), jx(1, pass%g0 + 1))
+            else
+               call chunk_products(this, lp, this%slot, pass, x(1, pass%g0 + 1), jx(1, pass%g0 + 1))
+            end if
+         end do
       end do
       call this%tbl%step_on(lp, ST_DF_REST, tc)
-      if (this%exchange) call restore_k1(no, nv, g, this%k1t, this%k1g)
-      call copy_vectors(no*nv, g, this%jg, jx)
-      if (this%exchange) call copy_vectors(no*nv, g, this%k1g, k1)
-      if (this%exchange .and. want_k2) call copy_vectors(no*nv, g, this%k2g, k2)
+      if (this%exchange) then
+         do grp = 1, ngrp
+            pass%g0 = (grp - 1)*VMAX
+            pass%g = min(VMAX, nvec - pass%g0)
+            call restore_k1(no, nv, pass%g, this%k1t((grp - 1)*nov*VMAX + 1), k1(1, pass%g0 + 1))
+            if (want_k2) call restore_k2(no, nv, pass%g, this%k2t((grp - 1)*nov*VMAX + 1), k2(1, pass%g0 + 1))
+         end do
+      end if
       call this%tbl%step_off(lp, ST_DF_REST, tc)
-   end subroutine apply_group
+   end subroutine df_excitation_apply
 
-   subroutine chunk_products(this, lp, blocks, p0, np, g, want_k2)
-      !! One chunk's contributions of np auxiliary functions to J, K1 and K2 of the g vectors in `xg` (module header).
-      !! The first chunk starts the accumulations (beta = 0), the others add.
+   subroutine ensure_scratch(this, ngrp)
+      !! The per-application scratch, on the device: the per-chunk intermediates once, the group-major vectors for
+      !! at least `ngrp` groups (grown, never shrunk, until `release`).
+      type(df_excitation_t), intent(inout) :: this
+      integer, intent(in) :: ngrp
+      integer(int64) :: no8, nv8, sz
+
+      no8 = this%nocc
+      nv8 = this%nvir
+      if (.not. allocated(this%tq)) then
+         allocate (this%tq(int(this%qblk, int64)*VMAX))
+         !$acc enter data create(this%tq)
+      end if
+      if (.not. this%exchange) return
+      if (.not. allocated(this%w)) then
+         allocate (this%w(no8*VMAX*max(nv8, no8)*this%qblk))
+         !$acc enter data create(this%w)
+      end if
+      if (ngrp <= this%ngrp) return
+      if (allocated(this%xk)) then
+         !$acc exit data delete(this%xk, this%k1t)
+         deallocate (this%xk, this%k1t)
+      end if
+      if (allocated(this%xq)) then
+         !$acc exit data delete(this%xq, this%k2t)
+         deallocate (this%xq, this%k2t)
+      end if
+      sz = no8*nv8*VMAX*ngrp
+      allocate (this%xk(sz), this%k1t(sz))
+      !$acc enter data create(this%xk, this%k1t)
+      if (this%k2) then
+         allocate (this%xq(sz), this%k2t(sz))
+         !$acc enter data create(this%xq, this%k2t)
+      end if
+      this%ngrp = ngrp
+   end subroutine ensure_scratch
+
+   subroutine chunk_products(this, lp, blocks, pass, x, jx)
+      !! One chunk's contributions of np auxiliary functions to J, K1 and K2 of the g vectors of `pass` (module
+      !! header): J into `jx`, K1 and K2 into the group's slices of the accumulators. The first chunk starts the
+      !! accumulations (beta = 0), the others add.
       type(df_excitation_t), intent(inout) :: this
       type(trc_linalg_t), intent(inout) :: lp
       type(df_blocks_t), intent(inout) :: blocks
-      integer, intent(in) :: p0, np, g
-      logical, intent(in) :: want_k2
+      type(df_pass_t), intent(in) :: pass
+      real(dp), intent(in) :: x(this%nocc*this%nvir, pass%g)
+      real(dp), intent(inout) :: jx(this%nocc*this%nvir, pass%g)
       type(trc_gemm_batch_t) :: gb
       type(timer_type) :: tc
-      integer :: no, nv, nov, k
-      integer(int64) :: first, ob, ov, vv
+      integer :: no, nv, nov, np, g
+      integer(int64) :: first, ob, ov, vv, xo
       real(dp) :: beta
 
       no = this%nocc
       nv = this%nvir
       nov = no*nv
-      first = merge(0, p0 - 1, blocks%slot)
+      np = pass%np
+      g = pass%g
+      first = merge(0, pass%p0 - 1, blocks%slot)
       ob = first*no*no
       ov = first*no*nv
       vv = first*nv*nv
-      beta = merge(0.0_dp, 1.0_dp, p0 == 1)
+      xo = int(pass%grp - 1, int64)*nov*VMAX
+      beta = merge(0.0_dp, 1.0_dp, pass%p0 == 1)
       ! J: t = B_ov^T x, J += B_ov t
       call this%tbl%step_on(lp, ST_DF_J, tc)
-      call lp%gemm("T", "N", np, g, nov, 1.0_dp, blocks%bov(ov + 1), nov, this%xg, nov, 0.0_dp, this%tq, np)
-      call lp%gemm("N", "N", nov, g, np, 1.0_dp, blocks%bov(ov + 1), nov, this%tq, np, beta, this%jg, nov)
+      call lp%gemm("N", "N", np, g, nov, 1.0_dp, blocks%bov(ov + 1), np, x, nov, 0.0_dp, this%tq, np)
+      call lp%gemm("T", "N", nov, g, np, 1.0_dp, blocks%bov(ov + 1), np, this%tq, np, beta, jx, nov)
       call this%tbl%step_off(lp, ST_DF_J, tc)
+      call this%tbl%add_flop(ST_DF_J, 4_int64*np*nov*g)
       if (.not. this%exchange) return
       ! K1: W(i, k, b, Q) = sum_j B_oo(j, i, Q) x(j, k, b), K1(i, k, a) += W((i, k), (b, Q)) B_vv((b, Q), a)
       call this%tbl%step_on(lp, ST_DF_K1, tc)
       gb = trc_gemm_batch(no, g*nv, no, np, lda=no, ldb=no, ldc=no, sa=int(no, int64)**2, sb=0_int64, &
                           sc=int(no, int64)*g*nv, transa="T")
-      call lp%gemm_batched(gb, blocks%boo(ob + 1), this%xk, this%w)
-      call lp%gemm("N", "N", no*g, nv, nv*np, 1.0_dp, this%w, no*g, blocks%bvv(vv + 1), nv*np, beta, this%k1t, no*g)
+      call lp%gemm_batched(gb, blocks%boo(ob + 1), this%xk(xo + 1), this%w)
+      call lp%gemm("N", "N", no*g, nv, nv*np, 1.0_dp, this%w, no*g, blocks%bvv(vv + 1), nv*np, beta, &
+                   this%k1t(xo + 1), no*g)
       call this%tbl%step_off(lp, ST_DF_K1, tc)
-      if (.not. want_k2) return
-      ! K2, vector by vector: R(b, Q, a) = sum_j x(j, b) B_ov(j, a, Q), K2(:, :, k) += B_ov(i, (b, Q)) R((b, Q), a)
+      call this%tbl%add_flop(ST_DF_K1, 2_int64*np*no*g*nv*(no + nv))
+      if (.not. pass%want_k2) return
+      ! K2: u(Q, (j, k), i) = sum_b B_ov(Q, i, b) x(b, (j, k)), batched over i; then
+      ! K2((k, i), a) += sum_(Q, j) u((Q, j), (k, i)) B_ov((Q, j), a)
       call this%tbl%step_on(lp, ST_DF_K2, tc)
-      gb = trc_gemm_batch(nv, nv, no, np, lda=no, ldb=no, ldc=nv*np, sa=0_int64, sb=int(no, int64)*nv, &
-                          sc=int(nv, int64), transa="T")
-      do k = 1, g
-         call lp%gemm_batched(gb, this%xg(1, k), blocks%bov(ov + 1), this%rk)
-         call lp%gemm("N", "N", no, nv, nv*np, 1.0_dp, blocks%bov(ov + 1), no, this%rk, nv*np, beta, this%k2g(1, k), no)
-      end do
+      gb = trc_gemm_batch(np, no*g, nv, no, lda=np*no, ldb=nv, ldc=np, sa=int(np, int64), sb=0_int64, &
+                          sc=int(np, int64)*no*g)
+      call lp%gemm_batched(gb, blocks%bov(ov + 1), this%xq(xo + 1), this%w)
+      call lp%gemm("T", "N", g*no, nv, np*no, 1.0_dp, this%w, np*no, blocks%bov(ov + 1), np*no, beta, &
+                   this%k2t(xo + 1), g*no)
       call this%tbl%step_off(lp, ST_DF_K2, tc)
+      call this%tbl%add_flop(ST_DF_K2, 4_int64*np*no*no*nv*g)
    end subroutine chunk_products
-
-   subroutine copy_vectors(nov, g, a, b)
-      !! b(:, 1:g) = a(:, 1:g), on the device: the vectors of a pass into and out of the object's scratch.
-      integer, intent(in) :: nov, g
-      real(dp), intent(in) :: a(nov, g)
-      real(dp), intent(out) :: b(nov, g)
-      integer(int64) :: t
-      integer :: p, k
-      do concurrent(t=0:int(nov, int64)*g - 1) local(p, k)
-         p = int(mod(t, int(nov, int64))) + 1
-         k = int(t/int(nov, int64)) + 1
-         b(p, k) = a(p, k)
-      end do
-   end subroutine copy_vectors
 
    subroutine reorder_x(no, nv, g, x, xk)
       !! xk(j, k, b) = x(j, b, k): the vectors beside each other along the second index, so one GEMM
@@ -532,6 +591,23 @@ contains
       end do
    end subroutine reorder_x
 
+   subroutine reorder_xq(no, nv, g, x, xq)
+      !! xq(b, j, k) = x(j, b, k): the virtual index fastest, the K2 products' right operand.
+      integer, intent(in) :: no, nv, g
+      real(dp), intent(in) :: x(no*nv*g)
+      real(dp), intent(out) :: xq(nv*no*g)
+      integer(int64) :: t, no8, nv8
+      integer :: j, b, k
+      no8 = no
+      nv8 = nv
+      do concurrent(t=0:no8*nv8*g - 1) local(j, b, k)
+         j = int(mod(t, no8)) + 1
+         b = int(mod(t/no8, nv8)) + 1
+         k = int(t/(no8*nv8)) + 1
+         xq(b + nv*(j - 1) + nv*no*(k - 1)) = x(t + 1)
+      end do
+   end subroutine reorder_xq
+
    subroutine restore_k1(no, nv, g, k1t, k1)
       !! k1(i, a, k) = k1t(i, k, a), the inverse of `reorder_x`'s layout.
       integer, intent(in) :: no, nv, g
@@ -548,6 +624,23 @@ contains
          k1(t + 1) = k1t(i + no*(k - 1) + no*g*(a - 1))
       end do
    end subroutine restore_k1
+
+   subroutine restore_k2(no, nv, g, k2t, k2)
+      !! k2(i, a, k) = k2t(k, i, a): the K2 accumulator's layout back to the amplitudes'.
+      integer, intent(in) :: no, nv, g
+      real(dp), intent(in) :: k2t(g*no*nv)
+      real(dp), intent(out) :: k2(no*nv*g)
+      integer(int64) :: t, no8, nv8
+      integer :: i, a, k
+      no8 = no
+      nv8 = nv
+      do concurrent(t=0:no8*nv8*g - 1) local(i, a, k)
+         i = int(mod(t, no8)) + 1
+         a = int(mod(t/no8, nv8)) + 1
+         k = int(t/(no8*nv8)) + 1
+         k2(t + 1) = k2t(k + g*(i - 1) + g*no*(a - 1))
+      end do
+   end subroutine restore_k2
 
    subroutine tddft_df_combine_tda(nov, nvec, jscale, kscale, jx, k1, ax)
       !! ax := jscale J + (-kscale) K1 over the amplitudes flattened to one index, on the device.
@@ -631,12 +724,18 @@ contains
       !! Free the blocks and the scratch. The packed B stays with this object until `restore` (it is not ours to free).
       class(df_excitation_t), intent(inout) :: this
       if (this%ready) then
-         !$acc exit data delete(this%cmo, this%xg, this%jg, this%k1g, this%k2g)
+         !$acc exit data delete(this%cmo)
          if (allocated(this%tens)) then
             !$acc exit data delete(this%tens, this%half)
          end if
          if (allocated(this%xk)) then
-            !$acc exit data delete(this%xk, this%k1t, this%w, this%rk)
+            !$acc exit data delete(this%xk, this%k1t)
+         end if
+         if (allocated(this%xq)) then
+            !$acc exit data delete(this%xq, this%k2t)
+         end if
+         if (allocated(this%w)) then
+            !$acc exit data delete(this%w)
          end if
          if (allocated(this%tq)) then
             !$acc exit data delete(this%tq)
@@ -647,16 +746,16 @@ contains
       if (allocated(this%cmo)) deallocate (this%cmo)
       if (allocated(this%tens)) deallocate (this%tens)
       if (allocated(this%half)) deallocate (this%half)
-      if (allocated(this%xk)) deallocate (this%xk)
+      if (allocated(this%xk)) deallocate (this%xk, this%k1t)
+      if (allocated(this%xq)) deallocate (this%xq, this%k2t)
       if (allocated(this%w)) deallocate (this%w)
-      if (allocated(this%rk)) deallocate (this%rk)
       if (allocated(this%tq)) deallocate (this%tq)
-      if (allocated(this%k1t)) deallocate (this%k1t)
-      if (allocated(this%xg)) deallocate (this%xg, this%jg, this%k1g, this%k2g)
       this%ready = .false.
       this%exchange = .false.
+      this%k2 = .false.
       this%nres = 0
       this%qblk = 0
+      this%ngrp = 0
    end subroutine df_excitation_release
 
 end module trc_tddft_df

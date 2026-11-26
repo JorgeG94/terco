@@ -41,7 +41,7 @@ module check_capi_tddft_suite
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
                                trc_set_tddft_missed_root_iterations, trc_set_tddft_density_screen, trc_check_tddft, trc_run_tddft, &
                                trc_tddft_nroots, trc_tddft_window_open, &
-                               trc_tddft_energies, &
+                               trc_tddft_energies, trc_timing, trc_timing_count, TRC_TIMING_NAME_MAX, &
                                trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
                                trc_set_aux_json, trc_set_jkfit_json, trc_set_df, trc_set_rimp2, trc_run_rimp2, &
                                trc_save_scf, trc_load_scf, &
@@ -286,12 +286,60 @@ contains
                                                 to_string(maxval(abs(osc - osc_ref)), "es10.2"))
       end if
       if (.not. allocated(error)) then
+         call check_df_timings(error, handle)
+      end if
+      if (.not. allocated(error)) then
          rc = trc_run_gradient(handle)
          call check(error, rc == TRC_ERR_UNSUPPORTED .and. index(message_of(handle), "not implemented yet") > 0, &
                     "the --df excited-state gradient must be refused: "//message_of(handle))
       end if
       rc = trc_destroy(handle)
    end subroutine test_df
+
+   subroutine check_df_timings(error, handle)
+      !! After a --df solve trc_timing lists the step table of the excitation solve, under the names the
+      !! regression bench (bench/regression/cases.toml, tddft_df_rpa) judges on, each a non-negative time.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr), intent(in) :: handle
+      character(len=*), parameter :: WANTED(6) = [character(len=32) :: "tddft.total", "tddft.step.exchange_ij_ab", &
+                                                  "tddft.step.exchange_ib_ja", "tddft.step.xc_kernel", &
+                                                  "tddft.step.davidson_host", "tddft.step.mo_blocks_setup"]
+      character(kind=c_char) :: buf(TRC_TIMING_NAME_MAX)
+      character(len=TRC_TIMING_NAME_MAX) :: nm
+      real(c_double) :: v
+      integer(c_int) :: n, rc
+      integer :: i, k, w
+      logical :: found(size(WANTED))
+      real(dp) :: total
+
+      found = .false.
+      total = -1.0_dp
+      rc = trc_timing_count(handle, n)
+      call check(error, rc == TRC_OK, "trc_timing_count after the --df solve")
+      if (allocated(error)) return
+      do i = 0, n - 1
+         rc = trc_timing(handle, int(i, c_int), buf, TRC_TIMING_NAME_MAX, v)
+         if (rc /= TRC_OK) cycle
+         nm = ""
+         do k = 1, TRC_TIMING_NAME_MAX
+            if (buf(k) == c_null_char) exit
+            nm(k:k) = buf(k)
+         end do
+         do w = 1, size(WANTED)
+            if (trim(nm) == trim(WANTED(w))) then
+               found(w) = .true.
+               call check(error, v >= 0.0_c_double, trim(nm)//" is negative")
+               if (allocated(error)) return
+               if (w == 1) total = v
+            end if
+         end do
+      end do
+      do w = 1, size(WANTED)
+         call check(error, found(w), "trc_timing does not list "//trim(WANTED(w))//" after a --df TDDFT solve")
+         if (allocated(error)) return
+      end do
+      call check(error, total > 0.0_dp, "tddft.total is not positive")
+   end subroutine check_df_timings
 
    subroutine test_pbe(error)
       type(error_type), allocatable, intent(out) :: error

@@ -143,6 +143,7 @@ V100, one repeat. The sizes below were measured on a Tesla V100-DGXS-32GB
 | `rimp2` | glycine chain x20, cc-pVDZ / cc-pVDZ-RIFIT | RI-MP2 steps | 82 s |
 | `dh` | glycine chain x20, B2PLYP / cc-pVDZ | double hybrid: four-centre SCF with XC, RI-MP2 for the PT2 part | 87 s |
 | `ecp` | 24 CH3I, def2-SVP, iodine ECP | ECP matrix and SCF with an ECP | 46 s |
+| `tddft_df_rpa` | water x20, PBE0 / def2-SVP, `--df`, RPA, 5 roots | the density-fitted excitation solve: the J, K1, K2 GEMMs, the XC kernel, the Davidson host work | not yet recorded |
 
 One repeat of everything takes about 18 minutes on one V100, so a full
 comparison (a warm-up run and 3 repeats) takes a little over an hour and a

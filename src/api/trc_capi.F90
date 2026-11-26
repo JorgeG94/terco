@@ -233,7 +233,8 @@ module trc_capi
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
-                            trc_tddft_run_solve_fitted, trc_tddft_run_gradient, trc_tddft_run_refusal
+                            trc_tddft_run_solve_fitted, trc_tddft_run_gradient, trc_tddft_run_refusal, &
+                            trc_tddft_run_request_t, trc_tddft_run_solve_fitted_grid
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect
@@ -6366,6 +6367,7 @@ contains
       type(context_box), pointer :: cx
       character(len=:), allocatable :: refusal
       character(len=256) :: reason
+      type(trc_tddft_run_request_t) :: req
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -6403,7 +6405,10 @@ contains
          cx%message = "trc_run_tddft: the --df fit of the SCF is gone; run the SCF again"
          return
       end if
-      if (cx%opts%df) then
+      if (cx%opts%df .and. tddft_grid_reusable(cx)) then
+         req = trc_tddft_run_request_t(cx%nalpha, cx%opts, cx%td_opts)
+         call trc_tddft_run_solve_fitted_grid(cx%bb%b, cx%la, cx%res, req, cx%td, cx%dfjk, cx%kgrid)
+      else if (cx%opts%df) then
          call trc_tddft_run_solve_fitted(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%dfjk)
       else if (tddft_grid_reusable(cx)) then
          call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%kgrid)
@@ -9057,6 +9062,13 @@ contains
                call add_timing("pcm.total", tm%pcm_total)
             end if
          end associate
+      end if
+      if (cx%tddft_ok .and. allocated(cx%td%td%step_t)) then
+         ! The density-fitted excitation solve's step table; the four-centre one has none.
+         call add_timing("tddft.total", sum(cx%td%td%step_t))
+         do k = 1, size(cx%td%td%step_t)
+            call add_timing("tddft.step."//trim(timing_key(cx%td%td%step_names(k))), cx%td%td%step_t(k))
+         end do
       end if
       if (cx%rimp2_ok .and. cx%rimp2_timed) then
          call add_timing("rimp2.total", cx%rimp2_t_total)
