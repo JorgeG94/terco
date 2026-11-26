@@ -376,7 +376,8 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
    integer(c_int), parameter, public :: TRC_ABI_MINOR = 36
    !! 1.36: trc_run_tddft and trc_check_tddft accept a --df (density-fitted) reference, solved over the
-   !! fit its SCF converged with; the TDDFT trc_run_gradient over --df is refused (not implemented yet).
+   !! fit its SCF converged with; the TDDFT trc_run_gradient over --df is refused (not implemented yet), and
+   !! trc_run_tddft after the fit was dropped (trc_set_jkfit_*) returns TRC_ERR_STATE.
    !! No signature change.
    !! 1.35: trc_run_tddft, trc_check_tddft and the TDDFT trc_run_gradient accept a
    !! spherical orbital basis (refused before). No signature change.

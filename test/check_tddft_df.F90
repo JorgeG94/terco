@@ -10,14 +10,14 @@ module check_tddft_df_suite
    !!  3. the fitted excitation energies against a FOUR-CENTRE SCF and TDDFT of the same molecule: they differ by
    !!     the fitting error and must stay within FIT_BOUND, a sanity check that the operator is the fitted
    !!     one's and not an unrelated one (it is not a substitute for 1 and 2);
-   !!  4. the blocked paths against the unblocked one: chunks of seven auxiliary functions with every block
+   !!  4. the blocked paths against the unblocked one: chunks of eight auxiliary functions (a partial last chunk) with every block
    !!     resident, with none resident (every chunk rebuilt from the packed B inside each application) and with
    !!     some resident, to round-off (`tddft_df_set_blocks`);
    !!  5. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
    !!     check -- it was overwritten by an operator-precedence slip), a fit-less solve, an unset fit, a fit of another
    !!     basis, and the refusal plumbing for a device cap below the reserve (`device_memory_set_cap`), after which
-   !!     the fit is intact and solves again. A second ctest entry of the water Cartesian HF case runs the whole program with
-   !!     TERCO_TDDFT_DF_BLOCK=7 and TERCO_TDDFT_DF_RESIDENT=0 in the environment (the blocked, rebuilt path against
+   !!     the fit is intact and solves again. A second ctest entry of the water Cartesian HF case runs the anchors with
+   !!     TERCO_TDDFT_DF_BLOCK=8 and TERCO_TDDFT_DF_RESIDENT=0 in the environment (the blocked, rebuilt path against
    !!     the pyscf anchors).
    !! The spaces are as check_df_grad_vs_pyscf.F90's: "cart" (the orbital and auxiliary bases Cartesian) and
    !! "sph" (both as their JSON tags them, spherical for cc-pVDZ and def2-universal-jkfit), the latter running
@@ -27,8 +27,8 @@ module check_tddft_df_suite
    !!
    !! Arguments: xyz basis.json aux.json molname space(cart|sph) funcname probe.bin [mode]. Run from test/.
    !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4, 5 and the release. Items 4
-   !! and 5 do not depend on the molecule, the functional or the space, so ctest runs them once for HF and
-   !! once for a hybrid on water Cartesian instead of in every program (each costs two SCFs and a dozen solves).
+   !! and 5 do not depend on the molecule, the functional or the space, so ctest runs them once for HF (exchange on)
+   !! and once for PBE (exchange off) on water Cartesian instead of in every program (each costs two SCFs and a dozen solves).
    !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
@@ -55,10 +55,10 @@ module check_tddft_df_suite
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
-   ! TOL_OMEGA, TOL_OSC, TOL_YY: the Cartesian TDDFT checks' gates against pyscf (check_tddft_basis,
+   ! Above TOL_OMEGA, TOL_OSC, TOL_YY: the Cartesian TDDFT checks' gates against pyscf (check_tddft_basis,
    ! check_tddft_sph).
-   ! TOL_BLOCK_OMEGA, TOL_BLOCK_OSC: blocked against unblocked, the same operator summed in another order and
-   ! solved to conv_tol 1e-10.
+   ! Below, TOL_BLOCK_OMEGA and TOL_BLOCK_OSC: blocked against unblocked, the same operator summed in another
+   ! order and solved to conv_tol 1e-10.
    real(dp), parameter :: TOL_BLOCK_OMEGA = 1.0e-11_dp
    real(dp), parameter :: TOL_BLOCK_OSC = 1.0e-7_dp
    real(dp), parameter :: FIT_BOUND = 1.0e-4_dp
@@ -117,6 +117,10 @@ contains
 
    subroutine collect_check_tddft_df(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      if (trim(mode_arg) /= "extras" .and. trim(mode_arg) /= "anchors") then
+         call global_logger%error("check_tddft_df: unknown mode '"//trim(mode_arg)//"' (anchors or extras)")
+         error stop 1
+      end if
       if (trim(mode_arg) == "extras") then
          testsuite = [ &
                      new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
@@ -323,20 +327,33 @@ contains
    end subroutine test_vs_exact
 
    subroutine test_blocks(error)
-      !! Chunks of seven auxiliary functions: every block resident, none resident (each chunk rebuilt in every
+      !! Chunks of eight auxiliary functions: every block resident, none resident (each chunk rebuilt in every
       !! application), and the first three chunks resident.
       type(error_type), allocatable, intent(out) :: error
-      integer, parameter :: RESIDENT(3) = [-1, 0, 21]
+      integer, parameter :: QBLK = 8
+      integer, parameter :: RESIDENT(3) = [-1, 0, 3*QBLK]
       type(trc_tddft_run_result_t) :: tda, rpa
       type(trc_tddft_run_options_t) :: o
       real(dp) :: dom, dosc, dyy
-      integer :: k
+      integer :: k, naux, nchunk
 
       call fixture_build(error)
       if (allocated(error)) return
+      ! The last chunk must be partial (water Cartesian def2-universal-jkfit has 133 = 16*8 + 5 functions), and
+      ! the third plan keeps three chunks resident and rebuilds the rest: a mix of both.
+      naux = merge(fx%aux%nao_sph, fx%aux%nao, fx%aux%spherical)
+      nchunk = (naux + QBLK - 1)/QBLK
+      call global_logger%info("tddft df blocks: "//to_string(naux)//" auxiliary functions, "//to_string(nchunk)// &
+                              " chunks of "//to_string(QBLK)//", last chunk "//to_string(naux - (nchunk - 1)*QBLK)// &
+                              "; resident plan "//to_string(RESIDENT(3)/QBLK)//" resident, "// &
+                              to_string(nchunk - RESIDENT(3)/QBLK)//" rebuilt")
+      call check(error, mod(naux, QBLK) /= 0, "the chunk size leaves no partial last chunk, so the tail is untested")
+      if (allocated(error)) return
+      call check(error, RESIDENT(3) > 0 .and. RESIDENT(3) < naux, "the resident count does not mix resident and rebuilt")
+      if (allocated(error)) return
       o = fx%opts
       do k = 1, size(RESIDENT)
-         call tddft_df_set_blocks(7, RESIDENT(k))
+         call tddft_df_set_blocks(QBLK, RESIDENT(k))
          o%tda = .true.
          call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, tda, fx%dfjk)
          o%tda = .false.
@@ -395,8 +412,8 @@ contains
       if (allocated(error)) return
       call refuse_other_basis(error)
       if (allocated(error)) return
-      ! The refusal plumbing for a device without room: the cap is below the fixed reserve, so any molecule is
-      ! refused, with the sizes in the message and the fit left intact (it solves again after). That the
+      ! The refusal plumbing for a device without room: the cap is below the fixed reserve (RESERVE, 512 MiB, plus
+      ! the 256 MiB cuBLAS workspace, both in tddft_df_reserve), so any molecule is refused, with the sizes in the message and the fit left intact (it solves again after). That the
       ! refusal threshold is sized right is not checked here.
       call device_memory_set_cap(600000000_int64)
       call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, r, fx%dfjk)
@@ -479,6 +496,10 @@ program check_tddft_df
    if (command_argument_count() >= 6) call get_command_argument(6, funcname_arg)
    if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
    if (command_argument_count() >= 8) call get_command_argument(8, mode_arg)
+   if (trim(mode_arg) /= "anchors" .and. trim(mode_arg) /= "extras") then
+      call global_logger%error("check_tddft_df: unknown mode '"//trim(mode_arg)//"' (anchors or extras)")
+      error stop 1
+   end if
    stat = 0
    if (tddft_df_needs_more_aux_lmax()) then
       call global_logger%info("SKIP check_tddft_df: the auxiliary basis needs more angular momentum than DF_LMAX_AUX")

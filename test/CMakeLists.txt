@@ -3099,7 +3099,7 @@ set_tests_properties(terco/check_tddft_sph_formamide_hf terco/check_tddft_sph_fo
 # def2-universal-jkfit, against pyscf's TDA/TDDFT on mf.density_fit with the same auxiliary basis
 # (generate.py's tddft_df_* cases): water and formamide, HF, PBE and B3LYP, Cartesian 6-31G* (cart) and
 # spherical cc-pVDZ (sph), energies, oscillator strengths and ||Y||^2; plus the fitted roots against a
-# four-centre run, the blocked and rebuilt chunks against the unblocked solve, and the refusals. See
+# four-centre run. The blocked-chunk and refusal checks run separately (the extras tests below). See
 # check_tddft_df.F90's own header.
 foreach(_space IN ITEMS cart sph)
   if(_space STREQUAL "cart")
@@ -3124,8 +3124,9 @@ foreach(_space IN ITEMS cart sph)
   endforeach()
 endforeach()
 # The blocked-chunk and refusal checks do not depend on the molecule, the functional or the space: the "extras"
-# mode runs them once for HF and once for a hybrid on water Cartesian, not in every program above.
-foreach(_f IN ITEMS hf b3lyp)
+# mode runs them once for HF (exchange on) and once for PBE (exchange off, the one-element blocks) on water
+# Cartesian, not in every program above.
+foreach(_f IN ITEMS hf pbe)
   add_test(NAME terco/check_tddft_df_extras_${_f}
            COMMAND check_tddft_df_water_cart_${_f} water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json
                    water cart ${_f} ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_extras_${_f}_probe.bin extras)
@@ -3133,14 +3134,14 @@ foreach(_f IN ITEMS hf b3lyp)
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
                        SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
-# The same program with the blocked, rebuilt path forced through the environment switches: chunks of seven
+# The same program with the blocked, rebuilt path forced through the environment switches: chunks of eight
 # auxiliary functions, none kept resident, against the same pyscf anchors.
 add_test(NAME terco/check_tddft_df_water_cart_hf_envblocks
          COMMAND check_tddft_df_water_cart_hf water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json water cart hf
                  ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_water_cart_hf_env_probe.bin)
 set_tests_properties(terco/check_tddft_df_water_cart_hf_envblocks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                      SKIP_REGULAR_EXPRESSION "SKIP"
-                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=7;TERCO_TDDFT_DF_RESIDENT=0")
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=8;TERCO_TDDFT_DF_RESIDENT=0")
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of

@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_df_formamide_sph_hf"] -> gen_tddft_df
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: a4eca3ccd2ab12852a7c74fb4dcda9b40bc4836144c747fed064ddcac3aad984
+# hash: fa43dc34fcab2223fe2eb171d7795c1e13fed2cba30c26f70206bc4ebe8b41de
 # files: test/check_tddft_df.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/formamide.xyz
 E_SCF -1.68948152750316041e+02
 OMEGA 3
