@@ -3067,7 +3067,7 @@ add_executable(check_tddft_sph check_tddft_sph.F90)
 target_compile_definitions(check_tddft_sph PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(check_tddft_sph PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io test-drive::test-drive)
 target_include_directories(check_tddft_sph PRIVATE ${CMAKE_BINARY_DIR}/modules)
-foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad formamide:pbe formamide:b3lyp)
+foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad formamide:hf formamide:pbe formamide:b3lyp)
   string(REPLACE ":" ";" _cl ${_c})
   list(GET _cl 0 _mol)
   list(GET _cl 1 _f)
@@ -3076,17 +3076,22 @@ foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad forma
   if(_ncl GREATER 2)
     set(_grad grad)
   endif()
-  set(_t terco/check_tddft_sph_${_mol}_${_f})
+  # The energies-only formamide Hartree-Fock case has its own name and probe file (the gradient one is LONG).
+  set(_sfx "")
+  if(_mol STREQUAL "formamide" AND _f STREQUAL "hf" AND NOT _grad)
+    set(_sfx _energies)
+  endif()
+  set(_t terco/check_tddft_sph_${_mol}_${_f}${_sfx})
   add_test(NAME ${_t}
            COMMAND check_tddft_sph ${_mol}.xyz ${_mol} ${_f}
-                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_sph_${_mol}_${_f}_probe.bin ${_grad})
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_sph_${_mol}_${_f}${_sfx}_probe.bin ${_grad})
   set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endforeach()
-# LONG: all three formamide cases took 42-95 s on a loaded host build (the six gradients of Hartree-Fock 57-95 s),
-# the size of the Cartesian formamide Kohn-Sham checks above and the check_tddft_basis tier; nightly only. The
-# water cases (3-39 s) run on every pull request, and with them the spherical grid response (the `grad` water
-# Kohn-Sham cases' own test).
+# LONG: the formamide gradient and Kohn-Sham cases took 42-95 s on a loaded host build (the six gradients of
+# Hartree-Fock 57-95 s), the size of the Cartesian formamide Kohn-Sham checks above and the check_tddft_basis tier;
+# nightly only. Every pull request runs the water cases (3-39 s), with the spherical grid response (the `grad` water
+# Kohn-Sham cases' own test), and formamide Hartree-Fock energies only, the one case with more than one d shell.
 set_tests_properties(terco/check_tddft_sph_formamide_hf terco/check_tddft_sph_formamide_pbe
                      terco/check_tddft_sph_formamide_b3lyp PROPERTIES LABELS LONG)
 

@@ -25,7 +25,7 @@ module check_tddft_sph_suite
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
@@ -41,13 +41,22 @@ module check_tddft_sph_suite
    public :: xyz_arg, molname_arg, funcname_arg, probe_arg, grad_arg
 
    ! TOL_YY and GATE_GRAD are the Cartesian checks' gates against pyscf (check_tddft_basis, check_tddft_grad).
+   ! TOL_OMEGA and TOL_OSC: host-measured over the six cases, max|d omega| 2.8e-10 and max|d f| 2.1e-9; the gates
+   ! keep 35x and 50x for the device's 1e-12 atomics noise.
    real(dp), parameter :: TOL_OMEGA = 1.0e-8_dp
    real(dp), parameter :: TOL_OSC = 1.0e-7_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
-   ! Host-measured over the six cases: max|d omega| 2.8e-10 and max|d f| 2.1e-9 (the gates keep 35x and 50x for
-   ! the device's 1e-12 atomics noise); the grid response moves the water gradient by 4.5e-6 to 5.5e-6 and the atom
-   ! sum is 2e-13 with it and 4e-6 to 5e-6 without.
+   ! Grid response, measured on the host: it moves the water gradient by 4.5e-6 to 5.5e-6; the atom sum is 2e-13
+   ! with it and 4e-6 to 5e-6 without. RESPONSE_REF is the response vector of water PBE (full minus Pulay-only
+   ! gradient of TDA root 1, (x y z, atom)), written by this program's own run, not typed.
+   real(dp), parameter :: RESPONSE_REF(3, 3) = reshape([ &
+                          -2.00261050947746576e-13_dp, 2.77189720968125397e-13_dp, -5.53321734386713615e-06_dp, &
+                          6.85062305840109822e-14_dp, 1.09064019593319017e-07_dp, 7.93435809054443553e-07_dp, &
+                          6.71831044496382397e-14_dp, -1.09064215436660561e-07_dp, 7.93435578572143640e-07_dp], [3, 3])
+   real(dp), parameter :: RESPONSE_TOL = 1.0e-9_dp
+   ! RESPONSE_TOL: the host value did not move in any digit when the solve tolerances were loosened 10x (1e-9 and 1e-10),
+   ! the x components are 1e-13 noise, and the device's atomics noise is about 1e-12.
    real(dp), parameter :: GRID_MOVE_MIN = 1.0e-6_dp
    real(dp), parameter :: GRID_SUM_MAX = 1.0e-9_dp
    integer, parameter :: NROOTS = 3
@@ -290,16 +299,23 @@ contains
 
    subroutine test_grid_response(error)
       !! The grid response of a spherical basis, which pyscf has no reference for (its tdrks has none): the TDA
-      !! gradient of root 1 with it on, against the Pulay-only one of the fixture. The grid moves with the nuclei,
-      !! so (a) the response changes the gradient by the grid's own derivative, well above the solver noise, and
-      !! (b) the full gradient is translation invariant (its atom sum vanishes) while the Pulay-only one is not.
-      !! Hartree-Fock has no grid: the test passes trivially.
+      !! gradient of root 1 with it on, against the Pulay-only one of the fixture. What each assertion pins:
+      !! (a) the response is not zero (it moves the gradient by the grid's own derivative, well above the solver
+      !! noise); (b) the atom sum of the full gradient vanishes while the Pulay-only one does not, which pins the
+      !! point-displacement term (the weights following their atom) but not the Becke weight-derivative term, which
+      !! sums to zero over the atoms by itself; (c) for water PBE the response vector equals the value stored in
+      !! RESPONSE_REF, which does pin the weight-derivative term, to the measured RESPONSE_TOL (a regression value
+      !! of terco's own, not an external reference; the exact derivative is check_tddft_api's finite difference).
+      !! Hartree-Fock has no grid: the test skips.
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_run_options_t) :: opts
       type(trc_tddft_run_result_t) :: res
-      real(dp) :: diff, sum_full, sum_pulay
+      real(dp) :: diff, sum_full, sum_pulay, dref
 
-      if (trim(funcname_arg) == "hf") return
+      if (trim(funcname_arg) == "hf") then
+         call skip_test(error, "SKIP: Hartree-Fock has no grid")
+         return
+      end if
       call fixture_build(error)
       if (allocated(error)) return
       opts%nroots = 1
@@ -327,6 +343,12 @@ contains
                  to_string(sum_full, "es10.2"))
       if (allocated(error)) return
       call check(error, sum_pulay > 10.0_dp*sum_full, "the Pulay-only gradient must fail the atom sum by far more")
+      if (allocated(error)) return
+      if (trim(molname_arg) == "water" .and. trim(funcname_arg) == "pbe") then
+         dref = maxval(abs(res%grad - fx%g_tda(:, :, 1) - RESPONSE_REF))
+         call global_logger%info("tddft sph grid response vs its stored value: "//to_string(dref, "es10.2"))
+         call check(error, dref < RESPONSE_TOL, "the grid response vector vs its stored value, "//to_string(dref, "es10.2"))
+      end if
    end subroutine test_grid_response
 
    subroutine test_release(error)

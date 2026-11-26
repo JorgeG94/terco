@@ -71,11 +71,14 @@ module check_tddft_api_suite
    !! same quartets in a different order (1e-14 in check_fock_split).
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
    !! The gradient checks' gate against pyscf (check_tddft_grad).
+   integer, parameter :: CART_NLINDEP = 7
+   !! Functions dropped for the O2- d-aug-cc-pVDZ set at lindep_thresh 0.2 in the Cartesian basis (host-measured).
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
-   real(dp), parameter :: FD_GATE = 2.0e-7_dp
-   !! Kohn-Sham finite difference with the grid response (check_tddft_grad's FD_ABSTOL_DFT).
-   real(dp), parameter :: PULAY_MISS_MIN = 1.0e-6_dp
-   !! The Pulay-only gradient must miss the finite difference by this much at the coordinate the test picks.
+   real(dp), parameter :: FD_GATE = 1.0e-8_dp
+   !! Kohn-Sham finite difference with the grid response. Host-measured misses of the exact gradient: 1.4e-12
+   !! (Cartesian) and 3.0e-12 (spherical); the Richardson difference of four SCFs carries about 1e-12 per step on
+   !! the device, so 1e-8 keeps three orders over the measurement and sits 500x below the Pulay-only miss
+   !! (5.2e-6 and 7.2e-6) that the test must tell apart.
 
    type :: fixture_t
       !! One SCF of water, with what the TDDFT entry needs.
@@ -125,7 +128,9 @@ contains
                      new_unittest("RPA energies and ||Y||^2 vs pyscf (water PBE/6-31G*)", test_energies_rpa), &
                      new_unittest("refusals before any work", test_refusals), &
                      new_unittest("an SCF with functions dropped for linear dependence is refused", test_lindep_refused), &
-                     new_unittest("the same in a Cartesian basis", test_lindep_refused_cart) &
+                     new_unittest("the same in a Cartesian basis", test_lindep_refused_cart), &
+                     new_unittest("an unrestricted or non-square reference is refused with its own message", &
+                                  test_reference_shape_refused) &
                      ]
       end if
    end subroutine collect_check_tddft_api
@@ -912,9 +917,8 @@ contains
                     to_string(exact_miss, "es10.2"))
       end if
       if (.not. allocated(error)) then
-         call check(error, pulay_miss > PULAY_MISS_MIN, "the Pulay-only gradient should miss the finite difference "// &
-                    "by more than "//to_string(PULAY_MISS_MIN, "es8.1")//", so the test tells the two apart, got "// &
-                    to_string(pulay_miss, "es10.2"))
+         call check(error, pulay_miss > 10.0_dp*FD_GATE, "the Pulay-only gradient should miss the finite difference "// &
+                    "by more than ten gates, so the test tells the two apart, got "//to_string(pulay_miss, "es10.2"))
       end if
       call fixture_release(fx)
    end subroutine test_grid_response
@@ -975,8 +979,9 @@ contains
       sopts%conv_diis = 1.0e-9_dp
       sopts%max_iteration = 100
       call trc_scf_run(bas, 5, 5, sopts, scf)
-      call check(error, scf%converged .and. (scf%n_lindep == 5 .or. (cart .and. scf%n_lindep > 0)), &
-                 "the SCF must converge with functions dropped (5 in the spherical basis)")
+      call global_logger%info("lindep refusal: n_lindep "//to_string(scf%n_lindep)//merge(" (Cartesian)", " (spherical)", cart))
+      call check(error, scf%converged .and. scf%n_lindep == merge(CART_NLINDEP, 5, cart), &
+                 "the SCF must converge with "//to_string(merge(CART_NLINDEP, 5, cart))//" functions dropped")
       if (.not. allocated(error)) then
          opts%nroots = 1
          call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
@@ -986,6 +991,46 @@ contains
       call la%release()
       call bas%release()
    end subroutine lindep_refused
+
+   subroutine test_reference_shape_refused(error)
+      !! run_reference_refusal runs before any work on the reference, so hand-made SCF results are enough: an
+      !! unrestricted one (nspin = 2), and a restricted one whose orbitals are one column short of square in the
+      !! basis, each with its own message.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_linalg_t) :: la
+      type(trc_scf_options_t) :: sopts
+      type(trc_scf_result_t) :: scf
+      type(trc_tddft_run_options_t) :: opts
+      type(trc_tddft_run_result_t) :: res
+      type(error_t) :: err
+      integer :: z(3), dev, nsp
+      real(dp) :: r(3, 3)
+
+      dev = trc_bind_device(0)
+      z = [8, 1, 1]
+      r = reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.4_dp, 1.1_dp, 0.0_dp, -1.4_dp, 1.1_dp], [3, 3])
+      call trc_basis_from_json("basis_sets/6-31g.json", 3, z, r, bas, err, force_cart=.true.)
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      call bas%to_device()
+      call la%init(bas%nao)
+      nsp = bas%nao
+      sopts%functional = "pbe"
+      scf%nspin = 2
+      call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
+      call check(error, res%err%has_error() .and. index(res%err%get_message(), "restricted reference") > 0 .and. &
+                 index(res%err%get_message(), "not square") == 0, "an unrestricted reference: "//res%err%get_message())
+      if (.not. allocated(error)) then
+         scf%nspin = 1
+         allocate (scf%cmo(nsp, nsp - 1, 1))
+         call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
+         call check(error, res%err%has_error() .and. index(res%err%get_message(), "not square") > 0 .and. &
+                    index(res%err%get_message(), "linear dependence") == 0, "non-square orbitals: "//res%err%get_message())
+      end if
+      call la%release()
+      call bas%release()
+   end subroutine test_reference_shape_refused
 
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error
