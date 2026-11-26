@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft"] -> gen_tddft
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 75032543d7b2956ba8c9329a14f47dd97cc926544d4e7a13fdb8c155315b575c
+# hash: 4355d03bd6b24dc7c91c29f0668c0d92ef7c03e1a2966df9e01273a63b75bc08
 # files: test/check_tddft.F90 test/basis_sets/6-31gs.json test/tops_ch4.xyz
 E_SCF -4.04441817589107302e+01
 OMEGA 5

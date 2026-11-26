@@ -653,14 +653,31 @@ contains
       !! a, on the device, holds at least n elements; contents not kept.
       real(dp), allocatable, intent(inout) :: a(:)
       integer(int64), intent(in) :: n
+      ! Map the data only, through explicit-shape dummies: creating through an
+      ! allocatable dummy (grow's `a`) and deleting as this%wrb left the descriptor
+      ! entry behind.
       if (allocated(a)) then
          if (size(a, kind=int64) >= n) return
-         !$acc exit data delete(a)
+         call map_delete(a, size(a, kind=int64))
          deallocate (a)
       end if
       allocate (a(max(n, 1_int64)))
-      !$acc enter data create(a)
+      call map_create(a, size(a, kind=int64))
    end subroutine grow
+
+   subroutine map_create(x, n)
+      !! Device copy of x's data, uninitialised; no descriptor is mapped.
+      integer(int64), intent(in) :: n
+      real(dp), intent(inout) :: x(n)
+      !$acc enter data create(x)
+   end subroutine map_create
+
+   subroutine map_delete(x, n)
+      !! Removes the device copy map_create made.
+      integer(int64), intent(in) :: n
+      real(dp), intent(inout) :: x(n)
+      !$acc exit data delete(x)
+   end subroutine map_delete
 
    subroutine count_window(this, md, w, sz, dsh, sc)
       !! Stats: a window's quartets, how many pass the per-quartet screen
@@ -742,7 +759,10 @@ contains
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
       if (allocated(this%wrb)) then
-         !$acc exit data delete(this%wrb, this%wsm)
+         ! As `grow` mapped them: data only, no descriptor. wsm is always allocated
+         ! when wrb is, because grow is called on both.
+         call map_delete(this%wrb, size(this%wrb, kind=int64))
+         call map_delete(this%wsm, size(this%wsm, kind=int64))
          deallocate (this%wrb, this%wsm)
       end if
       this%ngrp = 0
