@@ -124,7 +124,8 @@
 ! gradient builds them only for the (shell, ECP atom) pairs some kept task
 ! reads (a fifth of them on 24 CH3I, 5 GB where the energy matrix's own
 ! caches take 11 GB), and splits the ECP atoms into chunks only when the
-! device cannot hold them all (`ecp_grad_chunk_end`).
+! device cannot hold them all beside the kernels' local memory
+! (`ecp_grad_chunk_end`).
 !
 ! f FUNCTIONS. The raised shell of an f function is g. Those derivative
 ! shells, and only those, have K1b columns of their own size (245 KB) and a
@@ -155,7 +156,7 @@ module trc_ecp
    use trc_sph, only: sph_cart_to_sph
    use trc_cart_perm, only: cart_perm_l2b
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
-   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits
+   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits, device_memory_local_growth
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    implicit none
@@ -166,14 +167,17 @@ module trc_ecp
    type :: trc_ecp_screen_stats_t
       !! What the 3-centre screen did, for a test. `worst_ratio` and
       !! `nzero_bound` cover the tasks that ran (every task for `screen=.false.`).
-      !! The gradient fills the task counts and `nchunk` only, its tasks being
-      !! (derivative shell, shell, ECP atom) ones.
+      !! The gradient fills the task counts and the chunking figures only, its
+      !! tasks being (derivative shell, shell, ECP atom) ones.
       integer(int64) :: ntask = 0              !! (shell pair, ECP atom) tasks in all
       integer(int64) :: nkept = 0              !! tasks that ran
       integer(int64) :: nkept_g = 0            !! of those, the gradient's with a g derivative bra (trc_ecp_gbra)
       real(dp) :: worst_ratio = 0.0_dp         !! max over tasks of (largest |element|)/bound, bound > 0
       integer(int64) :: nzero_bound = 0        !! tasks with bound == 0 and a nonzero element
       integer :: nchunk = 0                    !! the gradient's chunks of ECP atoms (the matrix leaves 0)
+      integer(int64) :: chunk_reserve = 0      !! bytes the last chunk was chosen to leave free
+      integer(int64) :: cache_bytes = 0        !! caches and slots of every ECP atom together
+      integer(int64) :: atom_bytes_max = 0     !! of the largest ECP atom alone
    end type trc_ecp_screen_stats_t
 
    integer, parameter :: ECP_BLOCK_LBRA = ECP_ORB_LMAX, ECP_BLOCK_LKET = ECP_ORB_LMAX
@@ -181,16 +185,19 @@ module trc_ecp
 #include "inc/trc_ecp_block_sizes.inc"
    integer, parameter :: NFMAX = NFKET                                       !! 10
    integer, parameter :: SLOT_SIZE = NFMAX*NFMAX                             !! 100: one (shell pair, atom) slot
-   integer(int64), parameter :: GRAD_MIN_FREE_BYTES = 1024_int64**3
-   !! Below one ECP atom's caches plus this, the gradient refuses.
-   integer(int64), parameter :: GRAD_RESERVE_BYTES = 4*1024_int64**3
-   !! A chunk takes further ECP atoms only while this stays free: the task
-   !! kernel's local memory (20.5 KB a thread) is 3.5 GB on a V100 (nsys),
-   !! reserved at launch unless an earlier kernel's reservation is still there.
-   integer(int64), parameter :: GRAD_RESERVE_BRA_G_BYTES = 6*1024_int64**3
-   !! The same when some task has a g derivative bra (an f basis), whose
-   !! task kernel (trc_ecp_gbra) has the larger per-thread stack: 26.6 KB,
-   !! 4.5 GB of local memory on a V100.
+   integer(int64), parameter :: GRAD_FRAME_BYTES = 20520_int64
+   !! The largest per-thread stack frame a gradient without a g derivative
+   !! bra launches, the task kernel's (K1b's is 4256), 3.4 GB of local memory
+   !! on a V100: `cuobjdump -res-usage` on the linked libterco, NVHPC 26.9,
+   !! cc70. A frame belongs to the compiler and the target architecture, so
+   !! remeasure them for another; the thread count they are multiplied by
+   !! comes from the device.
+   integer(int64), parameter :: GRAD_FRAME_BRA_G_BYTES = 26568_int64
+   !! The same when some task has a g derivative bra (an f basis): the task
+   !! kernel of trc_ecp_gbra (its K1b's is 4256), 4.4 GB on a V100.
+   integer(int64), parameter :: GRAD_MARGIN_BYTES = 1024_int64**3
+   !! Left free beside a chunk's caches and the local memory, for what the
+   !! runtime allocates itself and a frame somewhat above those.
 
    real(dp), parameter :: ECP_SCREEN_THRESH = 1.0e-20_dp
    !! A (shell pair, ECP atom) task whose bound (see this file's header) is
@@ -315,7 +322,7 @@ contains
       mcart = 0.0_dp
 
       if (ecp%has_ecp) then
-         call ecp_check_rows(b%natm, ecp, error)
+         call ecp_check_rows("trc_ecp_matrix", b%natm, ecp, error)
          if (error%has_error()) return
          call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st, nsplit)
          if (error%has_error()) return
@@ -323,35 +330,37 @@ contains
       if (present(stats)) stats = st
    end subroutine trc_ecp_matrix_cart
 
-   subroutine ecp_check_rows(natm, ecp, error)
+   subroutine ecp_check_rows(caller, natm, ecp, error)
       !! A malformed or foreign ECP file must fail here, not read past the
       !! K1b caches (sized to ECP_LMAX) or the atom coordinates the rows name.
+      !! `caller` starts the message.
+      character(len=*), intent(in) :: caller
       integer, intent(in) :: natm
       type(trc_ecp_t), intent(in) :: ecp
       type(error_t), intent(inout) :: error
 
       if (ecp%natm /= natm) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP describes "// &
+         call error%set(ERROR_VALIDATION, caller//": the ECP describes "// &
                         to_string(ecp%natm)//" atoms, the basis "//to_string(natm))
          return
       end if
       if (ecp%nrow == 0) return
       if (maxval(ecp%ecp_np) > NPMAX) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has more "// &
+         call error%set(ERROR_VALIDATION, caller//": an ECP row has more "// &
                         "primitives than this port's fixed NPMAX ceiling")
          return
       end if
       if (minval(ecp%ecp_np) < 1) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has no primitives")
+         call error%set(ERROR_VALIDATION, caller//": an ECP row has no primitives")
          return
       end if
       if (minval(ecp%ecp_at) < 1 .or. maxval(ecp%ecp_at) > natm) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row names an atom "// &
+         call error%set(ERROR_VALIDATION, caller//": an ECP row names an atom "// &
                         "outside 1.."//to_string(natm))
          return
       end if
       if (minval(ecp%ecp_l) < -1 .or. maxval(ecp%ecp_l) > ECP_LMAX) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP channel has l outside "// &
+         call error%set(ERROR_VALIDATION, caller//": an ECP channel has l outside "// &
                         "-1 (local) .. "//to_string(ECP_LMAX)//", this port's ECP_LMAX")
       end if
    end subroutine ecp_check_rows
@@ -563,6 +572,10 @@ contains
       !! TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps a chunk at k ECP atoms (TESTING:
       !! forces the chunked path on a small molecule).
       !!
+      !! On an error `grad` must not be used: the device-memory refusal is
+      !! made chunk by chunk, so the chunks before the refused one have
+      !! already added their terms to it.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), intent(in) :: density(b%nao, b%nao)
@@ -581,7 +594,7 @@ contains
       if (.not. ecp%has_ecp .or. ecp%nrow == 0 .or. b%nshell == 0) return
       ! Checked before anything indexes by atom: a foreign ECP, or a shell on
       ! no atom (a probe function), would write outside `grad` below.
-      call ecp_check_rows(b%natm, ecp, error)
+      call ecp_check_rows("trc_ecp_gradient", b%natm, ecp, error)
       if (error%has_error()) return
       if (any(b%sh_at(1:b%nshell) < 1) .or. any(b%sh_at(1:b%nshell) > b%natm)) then
          call error%set(ERROR_VALIDATION, "trc_ecp_gradient: every shell must sit on an atom of the molecule")
@@ -752,12 +765,16 @@ contains
          st%ntask = int(ns - db%nreal, int64)*int(db%nreal, int64)*int(ch%natm_ecp, int64)
          st%nkept = tk%ntask
          st%nkept_g = tk%ng
+         do i = 1, ch%natm_ecp
+            st%cache_bytes = st%cache_bytes + ecp_grad_atom_bytes(tk, i)
+            st%atom_bytes_max = max(st%atom_bytes_max, ecp_grad_atom_bytes(tk, i))
+         end do
          nfail = 0
          if (tk%ntask > 0) then
             !$acc enter data copyin(tk, tk%bra, tk%ket, tk%atm)
             atoms = [1, 1]
             do while (atoms(1) <= ch%natm_ecp)
-               call ecp_grad_chunk_end(tk, ch%natm_ecp, atoms(1), atoms(2), error)
+               call ecp_grad_chunk_end(tk, ch%natm_ecp, atoms(1), atoms(2), st%chunk_reserve, error)
                if (error%has_error()) exit
                call ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail)
                st%nchunk = st%nchunk + 1
@@ -889,17 +906,29 @@ contains
       end do
    end subroutine ecp_grad_task_list
 
-   subroutine ecp_grad_chunk_end(tk, natm_ecp, a0, a1, error)
+   subroutine ecp_grad_chunk_end(tk, natm_ecp, a0, a1, reserve, error)
       !! The last ECP atom of the chunk starting at `a0`: as many atoms as the
-      !! device's free memory (less GRAD_RESERVE_BYTES) holds the K1b caches
-      !! and task slots of, and at least one; all of them on the host build
-      !! and in the usual case. TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps the chunk at k atoms.
+      !! device's free memory, less `reserve`, holds the K1b caches and task
+      !! slots of; all of them on the host build and in the usual case. A
+      !! refusal if it does not hold atom `a0` alone. `reserve` is the local
+      !! memory the kernels have still to take (nothing, when an earlier
+      !! kernel with as large a frame, the energy matrix's K1b in an SCF,
+      !! left it reserved) plus GRAD_MARGIN_BYTES.
+      !! TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps the chunk at k atoms.
+      !!
+      !! The free memory is the OpenACC runtime's, and NVHPC keeps a pool of
+      !! freed blocks that could count as used. No allowance is made: on 24
+      !! CH3I (NVHPC 26.9, V100) the energy matrix's 10.6 GB of caches are
+      !! reported free again after their `exit data`, and the figure here is
+      !! the same to 50 MB with NVCOMPILER_ACC_MEM_MANAGE=0. Not tried on a
+      !! smaller card.
       type(trc_ecp_grad_tasks_t), intent(in) :: tk
       integer, intent(in) :: natm_ecp, a0
       integer, intent(out) :: a1
+      integer(int64), intent(out) :: reserve
       type(error_t), intent(inout) :: error
 
-      integer(int64) :: free, need, more, reserve
+      integer(int64) :: free, need, more
       character(len=16) :: v
       integer :: st, cap
 
@@ -912,10 +941,11 @@ contains
 
       a1 = a0
       free = device_memory_free_bytes()
-      reserve = merge(GRAD_RESERVE_BRA_G_BYTES, GRAD_RESERVE_BYTES, tk%ng > 0)
+      reserve = device_memory_local_growth(merge(GRAD_FRAME_BRA_G_BYTES, GRAD_FRAME_BYTES, tk%ng > 0)) &
+                + GRAD_MARGIN_BYTES
       need = ecp_grad_atom_bytes(tk, a0)
-      if (.not. device_memory_fits(error, "trc_ecp_gradient: the caches of one ECP atom, with the reserve,", &
-                                   need + GRAD_MIN_FREE_BYTES, "use a smaller basis or a device with more memory")) return
+      if (.not. device_memory_fits(error, "trc_ecp_gradient: one ECP atom, with its caches and the launch reserve,", &
+                                   need + reserve, "use a smaller basis or a device with more memory")) return
       do while (a1 < natm_ecp)
          if (cap >= 1 .and. a1 - a0 + 1 >= cap) exit
          more = ecp_grad_atom_bytes(tk, a1 + 1)
