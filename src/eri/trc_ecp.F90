@@ -97,6 +97,31 @@
 ! list K2 runs over, and `block_buffer`/`conv_fail` hold only that list.
 ! check_ecp_screen.F90 asserts bound >= largest element on every task of
 ! several systems, through `trc_ecp_screen_stats_t`.
+!
+! THE GRADIENT (`trc_ecp_gradient`) reuses these items in one pass over all
+! ECP atoms. A Cartesian primitive obeys
+!     d/dR_c  x^l exp(-a r^2) = 2a x^(l+1) exp(-a r^2) - l_c x^(l-1) exp(-a r^2),
+! so the derivative of a contracted shell is a contracted shell of l + 1
+! (coefficients 2a c) and one of l - 1 (coefficients c). The "derivative
+! basis" is the real shells followed by those, and a task is a (derivative
+! bra shell, real ket shell, ECP atom) triple that survives the screen. The
+! fold back onto the parent functions is linear, so it is applied to the
+! density instead: for a derivative function mu' and component c,
+! `parent(c, mu')` and `coef(c, mu')` (1, -l_c, or 0) are built once on the
+! host, and the task's item reduces its block to
+!     w_c = 2 sum_{mu' nu} block(mu', nu) coef(c, mu') D(parent(c, mu'), nu),
+! three numbers in the task's own slot (no atomics, no nao**2 array). Only
+! the bra is differentiated (D is symmetric: the ket gives the same again,
+! hence the 2), and by translational invariance the ECP's own centre takes
+! minus the sum, so the host adds w to the bra shell's atom and -w to the
+! ECP atom. A task whose bra shell sits ON the ECP atom would add and take
+! the same w from one atom, and is not run.
+!
+! The K1b caches are about 180 KB per (shell, channel group), so the
+! gradient builds them only for the (shell, ECP atom) pairs some kept task
+! reads (a fifth of them on 24 CH3I, 5 GB where the energy matrix's own
+! caches take 11 GB), and splits the ECP atoms into chunks only when the
+! device cannot hold them all (`ecp_grad_chunk_end`).
 #include "inc/trc_dc_index.inc"
 
 module trc_ecp
@@ -113,6 +138,7 @@ module trc_ecp
    use trc_sph, only: sph_cart_to_sph
    use trc_cart_perm, only: cart_perm_l2b
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
+   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    implicit none
@@ -123,10 +149,13 @@ module trc_ecp
    type :: trc_ecp_screen_stats_t
       !! What the 3-centre screen did, for a test. `worst_ratio` and
       !! `nzero_bound` cover the tasks that ran (every task for `screen=.false.`).
+      !! The gradient fills the task counts and `nchunk` only, its tasks being
+      !! (derivative shell, shell, ECP atom) ones.
       integer(int64) :: ntask = 0              !! (shell pair, ECP atom) tasks in all
       integer(int64) :: nkept = 0              !! tasks that ran
       real(dp) :: worst_ratio = 0.0_dp         !! max over tasks of (largest |element|)/bound, bound > 0
       integer(int64) :: nzero_bound = 0        !! tasks with bound == 0 and a nonzero element
+      integer :: nchunk = 0                    !! the gradient's chunks of ECP atoms (the matrix leaves 0)
    end type trc_ecp_screen_stats_t
 
    integer, parameter :: NFMAX = (ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2     !! 10
@@ -147,6 +176,60 @@ module trc_ecp
    !! file, but only the first FAC1SIZE/ANG2SIZE entries were ever read).
    integer, parameter :: FAC1SIZE = NFMAX*(ECP_ORB_LMAX + 1)**3                  !! 640
    integer, parameter :: ANG2SIZE = (ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX  !! 3960
+   integer(int64), parameter :: CACHE_COL_BYTES = 8_int64*(FAC1SIZE + ECP_NRS*LC1MAX + ANG2SIZE)
+   !! One (shell, channel group) column of the three K1b caches.
+   integer(int64), parameter :: GRAD_MIN_FREE_BYTES = 1024_int64**3
+   !! Below one ECP atom's caches plus this, the gradient refuses.
+   integer(int64), parameter :: GRAD_RESERVE_BYTES = 4*1024_int64**3
+   !! A chunk takes further ECP atoms only while this stays free: the task
+   !! kernel's local memory is about 3.3 GiB on a V100 (nsys), reserved at
+   !! launch unless the energy matrix's reservation is still there.
+
+   type :: ecp_grad_tasks_t
+      !! The gradient's kept tasks, ECP atom by ECP atom (`first`), and the
+      !! K1b cache columns they read.
+      integer :: ntask = 0
+      integer, allocatable :: bra(:)      !! derivative bra shell, in the derivative basis
+      integer, allocatable :: ket(:)      !! real ket shell
+      integer, allocatable :: atm(:)      !! ECP atom, an index into the atm_* lists
+      integer, allocatable :: first(:)    !! atom a's tasks are first(a) + 1 .. first(a + 1)
+      integer, allocatable :: col(:, :)
+      !! (shell, atom): the 0-based column, within the atom's own block of
+      !! columns, of the shell's first channel group; -1 when no task of this
+      !! atom reads the shell.
+      integer, allocatable :: ncol(:)     !! cache columns atom a needs
+   end type ecp_grad_tasks_t
+
+   type :: ecp_channels_t
+      !! The ECP as the kernels see it: its (atom, l) channel groups, the atoms
+      !! that carry them, the radial grid and each group's U(r) on it.
+      integer :: ngroup = 0, natm_ecp = 0
+      integer, allocatable :: grp_atom(:), grp_l(:), grp_row0(:), grp_row1(:)
+      integer, allocatable :: atm_ecp(:), atm_grp0(:), atm_grp1(:)
+      real(dp) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
+      real(dp), allocatable :: ur(:, :)
+   end type ecp_channels_t
+
+   type :: ecp_deriv_basis_t
+      !! The derivative basis: the real shells, then per real shell the
+      !! raised one and (l > 0) the lowered one, as flat arrays (this file's
+      !! header), with the fold arrays the task item contracts the density
+      !! through.
+      integer :: nreal = 0                !! real shells, 1 .. nreal
+      integer :: nshell = 0               !! real and derivative shells
+      integer :: natm = 0, nao = 0, maxnp = 0   !! the real basis's own
+      real(dp), allocatable :: at_r(:, :)       !! its atom coordinates
+      integer, allocatable :: l(:), np(:)
+      real(dp), allocatable :: e(:, :), c(:, :), r(:, :)
+      integer, allocatable :: atom(:)     !! the atom of derivative shell nreal + f
+      integer, allocatable :: parent(:, :, :)
+      !! (component, lexicographic function of derivative shell f, f): the AO
+      !! of the real basis that function is a derivative term of.
+      real(dp), allocatable :: coef(:, :, :)
+      !! Its coefficient: 1 (raised), -l_c (lowered), 0 where there is none.
+      integer, allocatable :: ket_ao(:, :)
+      !! (lexicographic function, real shell): its AO, in this build's order.
+   end type ecp_deriv_basis_t
 
    real(dp), parameter :: ECP_SCREEN_THRESH = 1.0e-20_dp
    !! A (shell pair, ECP atom) task whose bound (see this file's header) is
@@ -285,40 +368,46 @@ contains
       mcart = 0.0_dp
 
       if (ecp%has_ecp) then
-         ! A malformed or foreign ECP file must fail here, not read past the
-         ! caches below: they are sized to ECP_LMAX, and the rows index
-         ! b%at_r by atom.
-         if (ecp%natm /= b%natm) then
-            call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP describes "// &
-                           to_string(ecp%natm)//" atoms, the basis "//to_string(b%natm))
-            return
-         end if
-         if (ecp%nrow > 0) then
-            if (maxval(ecp%ecp_np) > NPMAX) then
-               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has more "// &
-                              "primitives than this port's fixed NPMAX ceiling")
-               return
-            end if
-            if (minval(ecp%ecp_np) < 1) then
-               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has no primitives")
-               return
-            end if
-            if (minval(ecp%ecp_at) < 1 .or. maxval(ecp%ecp_at) > b%natm) then
-               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row names an atom "// &
-                              "outside 1.."//to_string(b%natm))
-               return
-            end if
-            if (minval(ecp%ecp_l) < -1 .or. maxval(ecp%ecp_l) > ECP_LMAX) then
-               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP channel has l outside "// &
-                              "-1 (local) .. "//to_string(ECP_LMAX)//", this port's ECP_LMAX")
-               return
-            end if
-         end if
+         call ecp_check_rows(b%natm, ecp, error)
+         if (error%has_error()) return
          call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st, nsplit)
          if (error%has_error()) return
       end if
       if (present(stats)) stats = st
    end subroutine trc_ecp_matrix_cart
+
+   subroutine ecp_check_rows(natm, ecp, error)
+      !! A malformed or foreign ECP file must fail here, not read past the
+      !! K1b caches (sized to ECP_LMAX) or the atom coordinates the rows name.
+      integer, intent(in) :: natm
+      type(trc_ecp_t), intent(in) :: ecp
+      type(error_t), intent(inout) :: error
+
+      if (ecp%natm /= natm) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP describes "// &
+                        to_string(ecp%natm)//" atoms, the basis "//to_string(natm))
+         return
+      end if
+      if (ecp%nrow == 0) return
+      if (maxval(ecp%ecp_np) > NPMAX) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has more "// &
+                        "primitives than this port's fixed NPMAX ceiling")
+         return
+      end if
+      if (minval(ecp%ecp_np) < 1) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has no primitives")
+         return
+      end if
+      if (minval(ecp%ecp_at) < 1 .or. maxval(ecp%ecp_at) > natm) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row names an atom "// &
+                        "outside 1.."//to_string(natm))
+         return
+      end if
+      if (minval(ecp%ecp_l) < -1 .or. maxval(ecp%ecp_l) > ECP_LMAX) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP channel has l outside "// &
+                        "-1 (local) .. "//to_string(ECP_LMAX)//", this port's ECP_LMAX")
+      end if
+   end subroutine ecp_check_rows
 
    subroutine trc_ecp_deriv_cart(b, ecp, ia, d, error)
       !!
@@ -328,11 +417,14 @@ contains
       !! where nothing contributes. Both bra and ket are `b`'s Cartesian
       !! functions, whatever `b%spherical` says.
       !!
-      !! Only the bra is differentiated: for a symmetric density the ket's
-      !! derivative is the same sum, and the derivative with respect to the ECP
-      !! centre follows from the integral's invariance under translating all
-      !! three centres together (`trc_ecp_gradient`). That is why one atom's
-      !! potential at a time: the centre term has to land on that atom.
+      !! THE TESTS' REFERENCE for dU/dR, not a production path: one ECP atom a
+      !! call, a dense (nao, nao, 3) result, folded on the host.
+      !! `trc_ecp_gradient` never calls it.
+      !!
+      !! Only the bra is differentiated: the ket's derivative is the transpose,
+      !! and the derivative with respect to the ECP centre follows from the
+      !! integral's invariance under translating all three centres together,
+      !! which is why one atom's potential at a time.
       !!
       !! A Cartesian primitive obeys
       !!     d/dR_c  x^l exp(-a r^2) = 2a x^(l+1) exp(-a r^2) - l_c x^(l-1) exp(-a r^2),
@@ -504,65 +596,437 @@ contains
       n = (ly + lz)*(ly + lz + 1)/2 + lz
    end function lexi
 
-   subroutine trc_ecp_gradient(b, ecp, density, grad, error)
+   subroutine trc_ecp_gradient(b, ecp, density, grad, error, screen, stats)
       !!
       !! ADDS d/dR_X sum_{mu nu} density(mu, nu) < mu | U | nu > into `grad(3, natm)`,
       !! the ECP's own term of the analytic gradient, `density` the symmetric
       !! Cartesian density the one-electron operators contract (D, or D + P for
-      !! RI-MP2). With w_C(X) = sum_{mu on X, nu} density(mu, nu) d(mu, nu, :) for
-      !! each ECP atom C (`trc_ecp_deriv_cart`), the basis-centre part is
-      !! 2 w_C(X) on X (bra and ket give the same) and, by translational
-      !! invariance, the potential's own centre gets minus the sum of those.
+      !! RI-MP2). One pass over the kept (derivative bra shell, ket shell, ECP
+      !! atom) tasks, the density contracted inside each task (this file's
+      !! header, THE GRADIENT).
+      !!
+      !! `density` is used on the device: if the caller has it mapped already,
+      !! that copy is read and must be current; otherwise it is copied in for
+      !! the call. `grad` is host memory. `screen=.false.` runs every task and
+      !! `stats` returns the task and chunk counts, for the tests.
+      !! TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps a chunk at k ECP atoms (TESTING:
+      !! forces the chunked path on a small molecule).
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), intent(in) :: density(b%nao, b%nao)
       real(dp), intent(inout) :: grad(3, b%natm)
       type(error_t), intent(inout) :: error
+      logical, intent(in), optional :: screen
+      type(trc_ecp_screen_stats_t), intent(out), optional :: stats
 
-      real(dp), allocatable :: d(:, :, :)
-      integer, allocatable :: ao_at(:)
-      logical, allocatable :: has(:)
-      integer :: ia, ish, a0, ao, c
-      real(dp) :: w(3)
+      type(ecp_deriv_basis_t) :: db
+      type(trc_ecp_screen_stats_t) :: st
+      logical :: do_screen
 
-      if (.not. ecp%has_ecp .or. ecp%nrow == 0) return
+      do_screen = .true.
+      if (present(screen)) do_screen = screen
+      if (.not. ecp%has_ecp .or. ecp%nrow == 0 .or. b%nshell == 0) return
       ! Checked before anything indexes by atom: a foreign ECP, or a shell on
       ! no atom (a probe function), would write outside `grad` below.
-      if (ecp%natm /= b%natm) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: the ECP describes "//to_string(ecp%natm)// &
-                        " atoms, the basis "//to_string(b%natm))
-         return
-      end if
-      if (minval(ecp%ecp_at(1:ecp%nrow)) < 1 .or. maxval(ecp%ecp_at(1:ecp%nrow)) > b%natm) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: an ECP row names an atom outside 1.."//to_string(b%natm))
-         return
-      end if
+      call ecp_check_rows(b%natm, ecp, error)
+      if (error%has_error()) return
       if (any(b%sh_at(1:b%nshell) < 1) .or. any(b%sh_at(1:b%nshell) > b%natm)) then
          call error%set(ERROR_VALIDATION, "trc_ecp_gradient: every shell must sit on an atom of the molecule")
          return
       end if
-      allocate (ao_at(b%nao), has(b%natm))
-      do ish = 1, b%nshell
-         a0 = b%sh_ao(ish)
-         ao_at(a0:a0 + ncart_l(b%sh_l(ish)) - 1) = b%sh_at(ish)
-      end do
-      has = .false.
-      has(ecp%ecp_at(1:ecp%nrow)) = .true.
-      do ia = 1, b%natm
-         if (.not. has(ia)) cycle
-         call trc_ecp_deriv_cart(b, ecp, ia, d, error)
-         if (error%has_error()) return
-         do ao = 1, b%nao
-            do c = 1, 3
-               w(c) = 2.0_dp*dot_product(density(ao, :), d(ao, :, c))
-            end do
-            grad(:, ao_at(ao)) = grad(:, ao_at(ao)) + w
-            grad(:, ia) = grad(:, ia) - w
-         end do
-         deallocate (d)
-      end do
+      if (maxval(b%sh_l(1:b%nshell)) + 1 > ECP_ORB_LMAX) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: the ECP gradient raises each orbital "// &
+                        "shell by one angular momentum, past the ECP kernels' f ceiling; not available "// &
+                        "for an f function")
+         return
+      end if
+      if (maxval(b%sh_np(1:b%nshell)) > NPMAX) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: an orbital shell has more "// &
+                        "primitives than this port's fixed NPMAX ceiling")
+         return
+      end if
+
+      call ecp_derivative_basis(b, db)
+      call ecp_gradient_run(db, ecp, density, grad, do_screen, st, error)
+      if (present(stats)) stats = st
    end subroutine trc_ecp_gradient
+
+   subroutine ecp_derivative_basis(b, db)
+      !! The derivative basis of `b` and its fold arrays (`ecp_deriv_basis_t`).
+      type(trc_basis_t), intent(in) :: b
+      type(ecp_deriv_basis_t), intent(out) :: db
+
+      integer :: ish, s, f, l, lf, m, fx, fy, fz, c, kind
+      integer :: p(3)
+
+      db%natm = b%natm
+      db%nao = b%nao
+      db%maxnp = b%maxnp
+      allocate (db%at_r(3, b%natm))
+      db%at_r = b%at_r(:, 1:b%natm)
+      db%nreal = b%nshell
+      db%nshell = b%nshell
+      do ish = 1, b%nshell
+         db%nshell = db%nshell + merge(2, 1, b%sh_l(ish) > 0)
+      end do
+      allocate (db%l(db%nshell), db%np(db%nshell))
+      allocate (db%e(b%maxnp, db%nshell), db%c(b%maxnp, db%nshell), db%r(3, db%nshell))
+      allocate (db%atom(db%nshell - db%nreal))
+      allocate (db%parent(3, NFMAX, db%nshell - db%nreal), db%coef(3, NFMAX, db%nshell - db%nreal))
+      allocate (db%ket_ao(NFMAX, db%nreal))
+      db%l(1:db%nreal) = b%sh_l(1:db%nreal)
+      db%np(1:db%nreal) = b%sh_np(1:db%nreal)
+      db%e(:, 1:db%nreal) = b%sh_e(:, 1:db%nreal)
+      db%c(:, 1:db%nreal) = b%sh_c(:, 1:db%nreal)
+      db%r(:, 1:db%nreal) = b%sh_r(:, 1:db%nreal)
+      db%parent = 1
+      db%coef = 0.0_dp
+      db%ket_ao = 1
+
+      s = db%nreal
+      do ish = 1, db%nreal
+         l = b%sh_l(ish)
+         do m = 0, ncart_l(l) - 1
+            db%ket_ao(m + 1, ish) = b%sh_ao(ish) + cart_perm_l2b(l, m)
+         end do
+         ! kind +1: the raised shell; -1: the lowered one.
+         do kind = 1, -1, -2
+            lf = l + kind
+            if (lf < 0) cycle
+            s = s + 1
+            f = s - db%nreal
+            db%l(s) = lf
+            db%np(s) = b%sh_np(ish)
+            db%e(:, s) = b%sh_e(:, ish)
+            db%r(:, s) = b%sh_r(:, ish)
+            db%atom(f) = b%sh_at(ish)
+            if (kind == 1) then
+               db%c(:, s) = 2.0_dp*b%sh_e(:, ish)*b%sh_c(:, ish)
+            else
+               db%c(:, s) = b%sh_c(:, ish)
+            end if
+            ! Function m of this shell, powers (fx, fy, fz), is the derivative
+            ! term of the parent function with one c power less (raised) or
+            ! more (lowered).
+            do m = 0, ncart_l(lf) - 1
+               fy = CART_POW_Y(m)
+               fz = CART_POW_Z(m)
+               fx = lf - fy - fz
+               do c = 1, 3
+                  p = [fx, fy, fz]
+                  p(c) = p(c) - kind
+                  if (p(c) < 0) cycle
+                  db%parent(c, m + 1, f) = b%sh_ao(ish) + cart_perm_l2b(l, lexi(p(2), p(3)))
+                  db%coef(c, m + 1, f) = merge(1.0_dp, -real(p(c), dp), kind == 1)
+               end do
+            end do
+         end do
+      end do
+   end subroutine ecp_derivative_basis
+
+   subroutine ecp_gradient_run(db, ecp, density, grad, do_screen, st, error)
+      !! The device side of `trc_ecp_gradient`: K1, the screen, the task list,
+      !! then K1b and the task kernel for each chunk of ECP atoms (one chunk
+      !! unless the caches do not fit), and the scatter into `grad`.
+      type(ecp_deriv_basis_t), intent(in) :: db
+      type(trc_ecp_t), intent(in) :: ecp
+      real(dp), intent(in) :: density(db%nao, db%nao)
+      real(dp), intent(inout) :: grad(3, db%natm)
+      logical, intent(in) :: do_screen
+      type(trc_ecp_screen_stats_t), intent(inout) :: st
+      type(error_t), intent(inout) :: error
+
+      type(ecp_channels_t) :: ch
+      type(ecp_grad_tasks_t) :: tk
+      real(dp), allocatable :: sval(:, :)
+      integer :: atoms(2)
+      integer :: ns, ngroup, maxnp, natm, i, g, t, nfail
+      integer(int64) :: ncol
+
+      call build_groups(ecp, ch%grp_atom, ch%grp_l, ch%grp_row0, ch%grp_row1, ch%ngroup)
+      if (ch%ngroup == 0) return
+      call build_atom_list(ch%grp_atom, ch%ngroup, ch%atm_ecp, ch%atm_grp0, ch%atm_grp1, ch%natm_ecp)
+      ns = db%nshell
+      ngroup = ch%ngroup
+      maxnp = db%maxnp
+      natm = db%natm
+
+      call ecp_quadrature_gauss_chebyshev(ch%rs, ch%ws, ECP_NRS)
+      allocate (ch%ur(0:ECP_NRS - 1, ngroup), sval(ns, ngroup))
+      !$acc enter data copyin(ch, ch%rs, ch%ws) create(ch%ur)
+      call ecp_potential_cache(ecp, ngroup, ch%grp_row0, ch%grp_row1, ch%rs, ch%ur)
+      !$acc enter data copyin(ch%grp_atom, ch%grp_l, ch%atm_ecp, ch%atm_grp0, ch%atm_grp1) &
+      !$acc            copyin(db, db%l, db%np, db%e, db%c, db%r, db%at_r, db%parent, db%coef, db%ket_ao) &
+      !$acc            copyin(density)
+
+      sval = 0.0_dp
+      if (do_screen) then
+         !$acc enter data create(sval)
+         do concurrent(t=1:ns*ngroup) local(i, g)
+            g = (t - 1)/ns + 1
+            i = t - (g - 1)*ns
+            call ecp_screen_item(TRC_DC_INDEX(i), TRC_DC_INDEX(g), ns, db%l, db%np, maxnp, db%e, db%c, &
+                                 db%r, natm, db%at_r, ngroup, ch%grp_atom, ch%rs, ch%ws, ch%ur(:, g), sval(i, g))
+         end do
+         !$acc update self(sval)
+         !$acc exit data delete(sval)
+      end if
+
+      call ecp_grad_task_list(db, ch, sval, do_screen, tk, error)
+
+      if (.not. error%has_error()) then
+         st%ntask = int(ns - db%nreal, int64)*int(db%nreal, int64)*int(ch%natm_ecp, int64)
+         st%nkept = tk%ntask
+         nfail = 0
+         if (tk%ntask > 0) then
+            !$acc enter data copyin(tk, tk%bra, tk%ket, tk%atm)
+            atoms = [1, 1]
+            do while (atoms(1) <= ch%natm_ecp)
+               call ecp_grad_chunk_end(tk, ch%natm_ecp, atoms(1), atoms(2), error)
+               if (error%has_error()) exit
+               call ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail)
+               st%nchunk = st%nchunk + 1
+               atoms(1) = atoms(2) + 1
+            end do
+            !$acc exit data delete(tk%bra, tk%ket, tk%atm, tk)
+         end if
+      end if
+
+      !$acc exit data delete(ch%grp_atom, ch%grp_l, ch%atm_ecp, ch%atm_grp0, ch%atm_grp1, density) &
+      !$acc           delete(db%l, db%np, db%e, db%c, db%r, db%at_r, db%parent, db%coef, db%ket_ao, db) &
+      !$acc           delete(ch%rs, ch%ws, ch%ur, ch)
+      if (error%has_error()) return
+
+      ncol = sum(int(tk%ncol, int64))
+      call global_logger%performance("   ECP gradient: kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
+                                     " (derivative shell, shell, ECP atom) tasks, "//to_string(st%nchunk)// &
+                                     " chunk(s), "//to_string(ncol*CACHE_COL_BYTES/1000000_int64)//" MB of K1b caches")
+      if (nfail > 0) then
+         call global_logger%info("   ECP radial quadrature: "//to_string(nfail)// &
+                                 " gradient tasks kept the finest level")
+      end if
+   end subroutine ecp_gradient_run
+
+   subroutine ecp_grad_task_list(db, ch, sval, do_screen, tk, error)
+      !! The kept tasks, ECP atom by ECP atom and, within an atom, grouped by
+      !! (bra l, ket l) so that neighbouring items do the same work; and the
+      !! cache columns each atom's tasks read. The screen is the 3-centre
+      !! bound of this file's header, over derivative bra shells and real ket
+      !! shells.
+      type(ecp_deriv_basis_t), intent(in) :: db
+      type(ecp_channels_t), intent(in) :: ch
+      real(dp), intent(in) :: sval(db%nshell, ch%ngroup)
+      logical, intent(in) :: do_screen
+      type(ecp_grad_tasks_t), intent(out) :: tk
+      type(error_t), intent(inout) :: error
+
+      real(dp), allocatable :: qmax(:)
+      integer(int64) :: n
+      integer :: pass, a, i, j, g, g0, g1, li, lj, lmax, ngroup, natm_ecp
+
+      ngroup = ch%ngroup
+      natm_ecp = ch%natm_ecp
+      allocate (qmax(ngroup))
+      do g = 1, ngroup
+         qmax(g) = maxval(sval(1:db%nreal, g))
+      end do
+      lmax = maxval(db%l)
+      allocate (tk%first(natm_ecp + 1), tk%ncol(natm_ecp), tk%col(db%nshell, natm_ecp))
+      tk%col = -1
+
+      ! Pass 1 counts and marks the shells each atom reads; pass 2 fills.
+      do pass = 1, 2
+         n = 0
+         do a = 1, natm_ecp
+            g0 = ch%atm_grp0(a)
+            g1 = ch%atm_grp1(a)
+            tk%first(a) = int(min(n, int(huge(tk%ntask), int64)))
+            do li = 0, lmax
+               do lj = 0, lmax
+                  do i = db%nreal + 1, db%nshell
+                     if (db%l(i) /= li) cycle
+                     ! On the ECP atom itself: w to the atom and -w to it again.
+                     if (db%atom(i - db%nreal) == ch%atm_ecp(a)) cycle
+                     ! No ket shell can pass if the largest cannot.
+                     if (do_screen) then
+                        if (sum(sval(i, g0:g1)*qmax(g0:g1)) < ECP_SCREEN_THRESH) cycle
+                     end if
+                     do j = 1, db%nreal
+                        if (db%l(j) /= lj) cycle
+                        if (do_screen) then
+                           if (pair_bound(sval, db%nshell, ngroup, i, j, g0, g1) < ECP_SCREEN_THRESH) cycle
+                        end if
+                        n = n + 1
+                        if (pass == 1) then
+                           tk%col(i, a) = 0
+                           tk%col(j, a) = 0
+                        else
+                           tk%bra(n) = i
+                           tk%ket(n) = j
+                           tk%atm(n) = a
+                        end if
+                     end do
+                  end do
+               end do
+            end do
+         end do
+         if (pass == 1) then
+            if (n > int(huge(tk%ntask), int64)) then
+               call error%set(ERROR_VALIDATION, "trc_ecp_gradient: "//to_string(n)//" (derivative shell, shell, "// &
+                              "ECP atom) tasks survive the screen, more than a default integer can index")
+               return
+            end if
+            tk%ntask = int(n)
+            allocate (tk%bra(tk%ntask), tk%ket(tk%ntask), tk%atm(tk%ntask))
+         end if
+      end do
+      tk%first(natm_ecp + 1) = tk%ntask
+
+      do a = 1, natm_ecp
+         tk%ncol(a) = 0
+         do i = 1, db%nshell
+            if (tk%col(i, a) < 0) cycle
+            tk%col(i, a) = tk%ncol(a)
+            tk%ncol(a) = tk%ncol(a) + ch%atm_grp1(a) - ch%atm_grp0(a) + 1
+         end do
+      end do
+   end subroutine ecp_grad_task_list
+
+   subroutine ecp_grad_chunk_end(tk, natm_ecp, a0, a1, error)
+      !! The last ECP atom of the chunk starting at `a0`: as many atoms as the
+      !! device's free memory (less GRAD_RESERVE_BYTES) holds the K1b caches
+      !! and task slots of, and at least one; all of them on the host build
+      !! and in the usual case. TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps the chunk at k atoms.
+      type(ecp_grad_tasks_t), intent(in) :: tk
+      integer, intent(in) :: natm_ecp, a0
+      integer, intent(out) :: a1
+      type(error_t), intent(inout) :: error
+
+      integer(int64) :: free, need, more
+      character(len=16) :: v
+      integer :: st, cap
+
+      cap = 0
+      call get_environment_variable("TERCO_ECP_GRAD_ATOM_CHUNK", v, status=st)
+      if (st == 0) then
+         read (v, *, iostat=st) cap
+         if (st /= 0) cap = 0
+      end if
+
+      a1 = a0
+      free = device_memory_free_bytes()
+      need = ecp_grad_atom_bytes(tk, a0)
+      if (.not. device_memory_fits(error, "trc_ecp_gradient: the caches of one ECP atom, with the reserve,", &
+                                   need + GRAD_MIN_FREE_BYTES, "use a smaller basis or a device with more memory")) return
+      do while (a1 < natm_ecp)
+         if (cap >= 1 .and. a1 - a0 + 1 >= cap) exit
+         more = ecp_grad_atom_bytes(tk, a1 + 1)
+         if (free >= 0 .and. need + more + GRAD_RESERVE_BYTES > free) exit
+         need = need + more
+         a1 = a1 + 1
+      end do
+   end subroutine ecp_grad_chunk_end
+
+   pure integer(int64) function ecp_grad_atom_bytes(tk, a) result(bytes)
+      !! Device memory of ECP atom `a`'s share of a chunk: its cache columns
+      !! (and their two index words) and its tasks' slots (w, two cache
+      !! columns, the convergence flag).
+      type(ecp_grad_tasks_t), intent(in) :: tk
+      integer, intent(in) :: a
+
+      bytes = int(tk%ncol(a), int64)*(CACHE_COL_BYTES + 8_int64) &
+              + int(tk%first(a + 1) - tk%first(a), int64)*(3*8_int64 + 3*4_int64)
+   end function ecp_grad_atom_bytes
+
+   subroutine ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail)
+      !! ECP atoms atoms(1)..atoms(2): K1b over the (shell, group) columns
+      !! their tasks read, the task kernel, and the scatter of its slots into
+      !! `grad`. `db`, `ch`, `tk`'s task arrays and `density` are mapped by
+      !! `ecp_gradient_run`.
+      type(ecp_deriv_basis_t), intent(in) :: db
+      type(ecp_channels_t), intent(in) :: ch
+      type(ecp_grad_tasks_t), intent(in) :: tk
+      integer, intent(in) :: atoms(2)
+      real(dp), intent(in) :: density(db%nao, db%nao)
+      real(dp), intent(inout) :: grad(3, db%natm)
+      integer, intent(inout) :: nfail
+
+      real(dp), allocatable :: fac1_cache(:, :), fac2_cache(:, :), ang2_cache(:, :), w(:, :)
+      integer, allocatable :: col_sh(:), col_g(:), ci(:), cj(:), conv_fail(:)
+      integer :: a, i, j, g, k, t, t0, nt, ncol, base, iatom
+      integer :: nreal, ns, maxnp, natm, nao, ngroup
+
+      nreal = db%nreal
+      ns = db%nshell
+      maxnp = db%maxnp
+      natm = db%natm
+      nao = db%nao
+      ngroup = ch%ngroup
+      t0 = tk%first(atoms(1))
+      nt = tk%first(atoms(2) + 1) - t0
+      if (nt == 0) return
+      ncol = sum(tk%ncol(atoms(1):atoms(2)))
+
+      ! An atom's columns follow those of the chunk's earlier atoms; a shell's
+      ! channel groups are consecutive.
+      allocate (col_sh(ncol), col_g(ncol), ci(nt), cj(nt))
+      base = 0
+      do a = atoms(1), atoms(2)
+         do i = 1, ns
+            if (tk%col(i, a) < 0) cycle
+            do g = ch%atm_grp0(a), ch%atm_grp1(a)
+               k = base + tk%col(i, a) + g - ch%atm_grp0(a) + 1
+               col_sh(k) = i
+               col_g(k) = g
+            end do
+         end do
+         do t = tk%first(a) + 1, tk%first(a + 1)
+            ci(t - t0) = base + tk%col(tk%bra(t), a) + 1
+            cj(t - t0) = base + tk%col(tk%ket(t), a) + 1
+         end do
+         base = base + tk%ncol(a)
+      end do
+
+      allocate (fac1_cache(0:FAC1SIZE - 1, ncol), fac2_cache(0:ECP_NRS*LC1MAX - 1, ncol), &
+                ang2_cache(0:ANG2SIZE - 1, ncol), w(3, nt), conv_fail(nt))
+      !$acc enter data copyin(col_sh, col_g, ci, cj) create(fac1_cache, fac2_cache, ang2_cache, w, conv_fail)
+
+      ! K1b, over the columns that are read only.
+      do concurrent(k=1:ncol) local(i, g)
+         i = col_sh(k)
+         g = col_g(k)
+         call ecp_k1b_item(TRC_DC_INDEX(i), TRC_DC_INDEX(g), ns, db%l, db%np, maxnp, db%e, db%c, db%r, &
+                           natm, db%at_r, ngroup, ch%grp_atom, ch%grp_l, ch%rs, &
+                           fac1_cache(:, k), fac2_cache(:, k), ang2_cache(:, k))
+      end do
+
+      ! The task kernel: one task, one block, one contraction, three numbers.
+      do concurrent(t=1:nt) local(k, i, j, a)
+         k = t0 + t
+         i = tk%bra(k)
+         j = tk%ket(k)
+         a = tk%atm(k)
+         call ecp_grad_item(w(:, t), conv_fail(t), TRC_DC_INDEX(i), TRC_DC_INDEX(j), nreal, ch%atm_ecp(a), &
+                            ch%atm_grp0(a), ch%atm_grp1(a), ci(t), cj(t), ncol, ngroup, ch%grp_l, ns, db%l, db%np, &
+                            maxnp, db%e, db%c, db%r, natm, db%at_r, ch%rs, ch%ws, ch%ur, fac1_cache, fac2_cache, &
+                            ang2_cache, nao, density, db%parent, db%coef, db%ket_ao)
+      end do
+
+      !$acc update self(w, conv_fail)
+      !$acc exit data delete(col_sh, col_g, ci, cj, fac1_cache, fac2_cache, ang2_cache, w, conv_fail)
+
+      ! The bra shell's atom takes w, the ECP's atom -w (translational
+      ! invariance).
+      do t = 1, nt
+         k = t0 + t
+         iatom = db%atom(tk%bra(k) - nreal)
+         grad(:, iatom) = grad(:, iatom) + w(:, t)
+         iatom = ch%atm_ecp(tk%atm(k))
+         grad(:, iatom) = grad(:, iatom) - w(:, t)
+      end do
+      nfail = nfail + sum(conv_fail)
+   end subroutine ecp_grad_chunk
 
    subroutine ecp_matrix_cart(b, ecp, mcart, error, do_screen, want_stats, st, split)
       !!
@@ -603,13 +1067,8 @@ contains
       call ecp_quadrature_gauss_chebyshev(rs, ws, ECP_NRS)
       allocate (ur_cache(0:ECP_NRS - 1, ngroup))
 
-      !$acc enter data copyin(rs, ecp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c) &
-      !$acc            copyin(grp_row0, grp_row1) create(ur_cache)
-      do concurrent(g=1:ngroup)
-         call ecp_k1_item(ur_cache(:, g), rs, grp_row0(g), grp_row1(g), &
-                          ecp%nrow, ecp%maxnp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c)
-      end do
-      !$acc exit data delete(ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c, grp_row0, grp_row1, ecp)
+      !$acc enter data copyin(rs) create(ur_cache)
+      call ecp_potential_cache(ecp, ngroup, grp_row0, grp_row1, rs, ur_cache)
 
       npair = nshell*(nshell + 1)/2
       if (split > 0) npair = (nshell - split)*split
@@ -790,6 +1249,27 @@ contains
       deallocate (atm_ecp, atm_grp0, atm_grp1, pr_i, pr_j, block_buffer, conv_fail)
       deallocate (kt_p, kt_a, sval)
    end subroutine ecp_matrix_cart
+
+   subroutine ecp_potential_cache(ecp, ngroup, grp_row0, grp_row1, rs, ur_cache)
+      !! K1: every channel group's U(r) on the whole grid. `rs` and
+      !! `ur_cache` are present on the device already; the ECP rows are
+      !! mapped for the kernel only.
+      type(trc_ecp_t), intent(in) :: ecp
+      integer, intent(in) :: ngroup
+      integer, intent(in) :: grp_row0(*), grp_row1(*)
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1)
+      real(dp), intent(inout) :: ur_cache(0:ECP_NRS - 1, ngroup)
+      integer :: g
+
+      !$acc enter data copyin(ecp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c) &
+      !$acc            copyin(grp_row0(1:ngroup), grp_row1(1:ngroup))
+      do concurrent(g=1:ngroup)
+         call ecp_k1_item(ur_cache(:, g), rs, grp_row0(g), grp_row1(g), &
+                          ecp%nrow, ecp%maxnp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c)
+      end do
+      !$acc exit data delete(ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c, &
+      !$acc                  grp_row0(1:ngroup), grp_row1(1:ngroup), ecp)
+   end subroutine ecp_potential_cache
 
    pure real(dp) function pair_bound(q, nshell, ngroup, i, j, g0, g1) result(bound)
       !! The screen's bound on shell pair (i, j) against the ECP atom whose
@@ -1027,18 +1507,58 @@ contains
       real(dp), intent(in) :: at_r(3, natm)
       real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
       real(dp), intent(in) :: ur_cache(0:ECP_NRS - 1, ngroup)
-      !! K1b's own global caches -- see its own header. Read here at
-      !! (:,ish,g) and (:,jsh,g): the pair's two shells against the SAME
+      !! K1b's own global caches -- see its own header. Column
+      !! (g - 1)*nshell + shell: the pair's two shells against the SAME
       !! channel group, never recomputed.
-      real(dp), intent(in) :: fac1_cache(0:FAC1SIZE - 1, nshell, ngroup)
-      real(dp), intent(in) :: fac2_cache(0:ECP_NRS*LC1MAX - 1, nshell, ngroup)
-      real(dp), intent(in) :: ang2_cache(0:ANG2SIZE - 1, nshell, ngroup)
+      real(dp), intent(in) :: fac1_cache(0:FAC1SIZE - 1, nshell*ngroup)
+      real(dp), intent(in) :: fac2_cache(0:ECP_NRS*LC1MAX - 1, nshell*ngroup)
+      real(dp), intent(in) :: ang2_cache(0:ANG2SIZE - 1, nshell*ngroup)
       real(dp), intent(out) :: slot(SLOT_SIZE)
       integer, intent(out) :: conv_fail
 
       real(dp) :: gctr(NFMAX, NFMAX)
+      integer :: mi, mj
+
+      call ecp_atom_block(gctr, conv_fail, ish, jsh, atm_id, g0, g1, (g0 - 1)*nshell + ish, (g0 - 1)*nshell + jsh, &
+                          nshell, nshell*ngroup, ngroup, grp_l, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                          natm, at_r, rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache)
+
+      do mj = 1, NFMAX
+         do mi = 1, NFMAX
+            slot((mj - 1)*NFMAX + mi) = gctr(mi, mj)
+         end do
+      end do
+   end subroutine ecp_pair_atom_item
+
+   pure subroutine ecp_atom_block(gctr, conv_fail, ish, jsh, atm_id, g0, g1, ci, cj, stride, ncache, &
+                                  ngroup, grp_l, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                                  natm, at_r, rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache)
+      !!
+      !! < shell ish | U of one ECP atom | shell jsh >, lexicographic, into
+      !! `gctr`: the sum over that atom's channel groups g0..g1. The two
+      !! shells' K1b columns of group g are `ci` and `cj` plus (g - g0)*stride:
+      !! stride = nshell in the energy's full (shell, group) caches, 1 in the
+      !! gradient's compacted ones.
+      !!
+      !$acc routine seq
+      integer, intent(in) :: ish, jsh, atm_id, g0, g1, ci, cj, stride, ncache
+      integer, intent(in) :: ngroup
+      integer, intent(in) :: grp_l(ngroup)
+      integer, intent(in) :: nshell, maxnp
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
+      integer, intent(in) :: natm
+      real(dp), intent(in) :: at_r(3, natm)
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
+      real(dp), intent(in) :: ur_cache(0:ECP_NRS - 1, ngroup)
+      real(dp), intent(in) :: fac1_cache(0:FAC1SIZE - 1, ncache)
+      real(dp), intent(in) :: fac2_cache(0:ECP_NRS*LC1MAX - 1, ncache)
+      real(dp), intent(in) :: ang2_cache(0:ANG2SIZE - 1, ncache)
+      real(dp), intent(out) :: gctr(NFMAX, NFMAX)
+      integer, intent(out) :: conv_fail
+
       real(dp) :: rc(3), ri(3), rj(3)
-      integer :: li, lj, npi, npj, mi, mj, g, local_fail
+      integer :: li, lj, npi, npj, g, ki, kj, local_fail
 
       li = sh_l(ish)
       lj = sh_l(jsh)
@@ -1051,26 +1571,74 @@ contains
       conv_fail = 0
 
       do g = g0, g1
+         ki = ci + (g - g0)*stride
+         kj = cj + (g - g0)*stride
          if (grp_l(g) == -1) then
             call ecp_type1_item(gctr, li, lj, npi, npj, &
                                 sh_e(1:npi, ish), sh_c(1:npi, ish), sh_e(1:npj, jsh), sh_c(1:npj, jsh), &
                                 ri, rj, rc, rs, ws, ur_cache(:, g), &
-                                fac1_cache(:, ish, g), fac1_cache(:, jsh, g), local_fail)
+                                fac1_cache(:, ki), fac1_cache(:, kj), local_fail)
          else
             call ecp_type2_item(gctr, li, lj, grp_l(g), &
                                 rs, ws, ur_cache(:, g), &
-                                fac2_cache(:, ish, g), fac2_cache(:, jsh, g), &
-                                ang2_cache(:, ish, g), ang2_cache(:, jsh, g), local_fail)
+                                fac2_cache(:, ki), fac2_cache(:, kj), &
+                                ang2_cache(:, ki), ang2_cache(:, kj), local_fail)
          end if
          conv_fail = max(conv_fail, local_fail)
       end do
+   end subroutine ecp_atom_block
 
-      do mj = 1, NFMAX
-         do mi = 1, NFMAX
-            slot((mj - 1)*NFMAX + mi) = gctr(mi, mj)
+   pure subroutine ecp_grad_item(w, conv_fail, ish, jsh, nreal, atm_id, g0, g1, ci, cj, ncache, &
+                                 ngroup, grp_l, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                                 natm, at_r, rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache, &
+                                 nao, density, parent, coef, ket_ao)
+      !!
+      !! The gradient task kernel's item: derivative bra shell `ish`, real ket
+      !! shell `jsh`, one ECP atom. Forms the block in its own scratch and
+      !! contracts it with the density through the fold arrays (this file's
+      !! header, THE GRADIENT) into its own three numbers.
+      !!
+      !$acc routine seq
+      integer, intent(in) :: ish, jsh, nreal, atm_id, g0, g1, ci, cj, ncache
+      integer, intent(in) :: ngroup
+      integer, intent(in) :: grp_l(ngroup)
+      integer, intent(in) :: nshell, maxnp, nao
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
+      integer, intent(in) :: natm
+      real(dp), intent(in) :: at_r(3, natm)
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
+      real(dp), intent(in) :: ur_cache(0:ECP_NRS - 1, ngroup)
+      real(dp), intent(in) :: fac1_cache(0:FAC1SIZE - 1, ncache)
+      real(dp), intent(in) :: fac2_cache(0:ECP_NRS*LC1MAX - 1, ncache)
+      real(dp), intent(in) :: ang2_cache(0:ANG2SIZE - 1, ncache)
+      real(dp), intent(in) :: density(nao, nao)
+      integer, intent(in) :: parent(3, NFMAX, nshell - nreal)
+      real(dp), intent(in) :: coef(3, NFMAX, nshell - nreal)
+      integer, intent(in) :: ket_ao(NFMAX, nreal)
+      real(dp), intent(out) :: w(3)
+      integer, intent(out) :: conv_fail
+
+      real(dp) :: gctr(NFMAX, NFMAX)
+      real(dp) :: acc(3)
+      integer :: f, mi, mj, c, nu
+
+      call ecp_atom_block(gctr, conv_fail, ish, jsh, atm_id, g0, g1, ci, cj, 1, ncache, &
+                          ngroup, grp_l, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                          natm, at_r, rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache)
+      f = ish - nreal
+      acc = 0.0_dp
+      do mj = 1, ncart_l(sh_l(jsh))
+         nu = ket_ao(mj, jsh)
+         do mi = 1, ncart_l(sh_l(ish))
+            do c = 1, 3
+               acc(c) = acc(c) + gctr(mi, mj)*coef(c, mi, f)*density(parent(c, mi, f), nu)
+            end do
          end do
       end do
-   end subroutine ecp_pair_atom_item
+      ! Twice: the ket's derivative gives the same sum for a symmetric density.
+      w = 2.0_dp*acc
+   end subroutine ecp_grad_item
 
    pure logical function close_enough(x, y) result(c)
       !$acc routine seq

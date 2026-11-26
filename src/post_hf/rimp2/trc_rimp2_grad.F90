@@ -134,11 +134,11 @@ module trc_rimp2_grad
    !! (trc_rimp2_driver's own rimp2_driver_mo_to_cart pads the same way).
 
    integer, parameter :: ST_ORB = 1, ST_CORR = 2, ST_ZVEC = 3, ST_DENSITY = 4, ST_GRAD4C = 5, ST_GRAD1E = 6, &
-                         ST_XC = 7, ST_KSGRID = 8, NSTEP = 8
+                         ST_XC = 7, ST_KSGRID = 8, ST_ECP = 9, NSTEP = 9
    character(len=20), parameter :: STEP_NAME(NSTEP) = [character(len=20) :: &
                                    "orbitals, pairs, ERI", "correlation (fitted)", "Z-vector (CPHF)", &
                                    "relaxed densities", "2e gradient", "1e gradient", "XC (KS reference)", &
-                                   "KS grid (rebuilt)"]
+                                   "KS grid (rebuilt)", "ECP gradient"]
 
    type :: trc_rimp2_grad_options_t
       !! The RI-MP2 gradient's knobs. Plain values only, but for `ecp`.
@@ -414,19 +414,20 @@ contains
          call tbl%step_off(la, ST_XC, tc)
       end if
       !$acc update self(job%grad)
-      !$acc exit data delete(job%grad, w%ccart, w%pao, w%wao, w%dhf)
-      call scf_grad_nuclear_repulsion(b, job%grad)
+      ! The ECP term adds into the host `grad` just fetched, with the relaxed
+      ! D + P that `w%dhf` holds, still mapped.
       if (job%opts%ecp%has_ecp) then
-         block
-            ! w%dhf is D + P on the host (relaxed_densities updated it there).
-            call trc_ecp_gradient(b, job%opts%ecp, w%dhf, job%grad, eerr)
-            if (eerr%has_error()) then
-               job%res%message = "trc_rimp2_gradient: "//eerr%get_message()
-               call release_all(pl, eri, fitted, w)
-               return
-            end if
-         end block
+         call tbl%step_on(la, ST_ECP, tc)
+         call trc_ecp_gradient(b, job%opts%ecp, w%dhf, job%grad, eerr)
+         call tbl%step_off(la, ST_ECP, tc)
       end if
+      !$acc exit data delete(job%grad, w%ccart, w%pao, w%wao, w%dhf)
+      if (eerr%has_error()) then
+         job%res%message = "trc_rimp2_gradient: "//eerr%get_message()
+         call release_all(pl, eri, fitted, w)
+         return
+      end if
+      call scf_grad_nuclear_repulsion(b, job%grad)
       job%grad = job%grad + w%scale*relax%grad
       call release_all(pl, eri, fitted, w)
       job%res%ok = .true.

@@ -15,7 +15,12 @@ module check_ecp_grad_suite
    !!      with two ECP atoms that fails if a centre term lands on the wrong one.
    !!      On a pull request the dimer's contraction is one directional
    !!      derivative, every atom moving at once (four matrices); element by
-   !!      element it is LONG.
+   !!      element it is LONG. HI with two more iodines, 9 and 60 bohr off
+   !!      (three ECP atoms, far enough for the screen to drop tasks): screened
+   !!      against unscreened, one chunk of ECP atoms against three, both
+   !!      against the density contracted with `trc_ecp_deriv_cart` (the
+   !!      dense, one-atom-a-time reference, a different derivative basis), and
+   !!      the refusal when the device cannot hold one atom's caches.
    !!   2. Whole gradients against pyscf 2.14 (the same BSE-JSON basis and ECP,
    !!      tight SCF), read from pyscf_refs/ecp_grad.ref: RHF of HI and TeH2
    !!      (spherical and Cartesian) and of the HI dimer, UHF of the HI cation,
@@ -29,7 +34,7 @@ module check_ecp_grad_suite
    !!      1e-6 or so.
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix
@@ -38,7 +43,8 @@ module check_ecp_grad_suite
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t
    use trc_ecp_json, only: trc_ecp_from_json
-   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart, trc_ecp_gradient
+   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart, trc_ecp_gradient, trc_ecp_screen_stats_t
+   use trc_device_memory, only: device_memory_set_cap
    use trc_error, only: error_t
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
                                trc_set_convergence, trc_set_method, trc_set_rimp2, trc_set_force_cartesian, &
@@ -49,6 +55,20 @@ module check_ecp_grad_suite
    private
    public :: collect_ecp_grad_tests
 
+   interface
+      function c_setenv(name, value, overwrite) bind(c, name="setenv") result(r)
+         import :: c_int, c_char
+         character(kind=c_char), intent(in) :: name(*), value(*)
+         integer(c_int), value :: overwrite
+         integer(c_int) :: r
+      end function c_setenv
+      function c_unsetenv(name) bind(c, name="unsetenv") result(r)
+         import :: c_int, c_char
+         character(kind=c_char), intent(in) :: name(*)
+         integer(c_int) :: r
+      end function c_unsetenv
+   end interface
+
    character(len=*), parameter :: DEF2_SVP = 'basis_sets/def2-svp.json'
    real(dp), parameter :: INT_TOL = 1.0e-10_dp
    !! The derivative matrix against its five-point difference, absolute: measured 8e-13.
@@ -56,6 +76,10 @@ module check_ecp_grad_suite
    !! trc_ecp_gradient against the contracted difference of U, Eh/bohr: measured 3e-12.
    real(dp), parameter :: DIRECTION_TOL = 1.0e-8_dp
    !! The dimer's directional derivative, a sum over all twelve components: measured 7e-11 (gfortran), 3e-11 (nvfortran), on a value of 1.2.
+   real(dp), parameter :: SCREEN_TOL = 1.0e-12_dp
+   !! Screened against unscreened, Eh/bohr: the dropped blocks are below 1e-20.
+   real(dp), parameter :: CHUNK_TOL = 1.0e-13_dp
+   !! Three chunks against one: the same tasks in the same order, each with its own slot.
    real(dp), parameter :: PYSCF_TOL = 1.0e-7_dp
    !! Whole gradients against pyscf_refs/ecp_grad.ref: measured at most 1e-9 (RHF, UHF and RI-MP2).
    real(dp), parameter :: GRAD_TOL_HF = 2.0e-6_dp
@@ -101,6 +125,8 @@ contains
          testsuite = [ &
                      new_unittest("dU/dR of HI vs differences of the ECP matrix", test_ints_hi), &
                      new_unittest("ECP gradient of an HI dimer (two ECP atoms) along a direction", test_dimer_direction), &
+                     new_unittest("ECP gradient with three ECP atoms: screened, chunked and the dense reference", &
+                                  test_screen_chunk), &
                      new_unittest("RHF gradients of bent TeH2 and Cartesian HI vs pyscf", test_rhf_pyscf), &
                      new_unittest("UHF gradient of the HI cation (doublet) vs pyscf", test_uhf_pyscf), &
                      new_unittest("RI-MP2 gradient of HI vs pyscf", test_mp2_pyscf), &
@@ -229,6 +255,113 @@ contains
       call bas%release()
       call ecp%release()
    end subroutine test_dimer_direction
+
+   subroutine dense_reference(bas, ecp, dens, g, err)
+      !! The same contraction from `trc_ecp_deriv_cart`, one ECP atom at a
+      !! time: its bra derivative times the density, twice for the ket, on the
+      !! bra's atom, and minus that on the ECP atom.
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_ecp_t), intent(in) :: ecp
+      real(dp), intent(in) :: dens(:, :)
+      real(dp), intent(out) :: g(:, :)
+      type(error_t), intent(inout) :: err
+      real(dp), allocatable :: d(:, :, :)
+      real(dp) :: w
+      integer :: ia, ish, mu, c, x
+
+      g = 0.0_dp
+      do ia = 1, bas%natm
+         if (.not. any(ecp%ecp_at(1:ecp%nrow) == ia)) cycle
+         call trc_ecp_deriv_cart(bas, ecp, ia, d, err)
+         if (err%has_error()) return
+         do ish = 1, bas%nshell
+            x = bas%sh_at(ish)
+            do mu = bas%sh_ao(ish), bas%sh_ao(ish) + (bas%sh_l(ish) + 1)*(bas%sh_l(ish) + 2)/2 - 1
+               do c = 1, 3
+                  w = 2.0_dp*dot_product(dens(mu, :), d(mu, :, c))
+                  g(c, x) = g(c, x) + w
+                  g(c, ia) = g(c, ia) - w
+               end do
+            end do
+         end do
+         deallocate (d)
+      end do
+   end subroutine dense_reference
+
+   subroutine test_screen_chunk(error)
+      !! HI, an iodine 9 bohr off it and another 60 bohr off: three ECP
+      !! atoms (and a hydrogen without one), tasks the screen drops, and
+      !! (TERCO_ECP_GRAD_ATOM_CHUNK=1) one ECP atom a chunk.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_ecp_t) :: ecp
+      type(error_t) :: err, refused
+      type(trc_ecp_screen_stats_t) :: st, st_all, st_chunk
+      integer, parameter :: NAT = 4
+      integer, parameter :: ELEMENTS(NAT) = [1, 53, 53, 53]
+      real(dp), parameter :: R(3, NAT) = reshape([0.1_dp, -0.2_dp, 0.0_dp, &
+                                                  0.3_dp, 0.2_dp, 3.04_dp, &
+                                                  9.0_dp, 1.0_dp, 2.0_dp, &
+                                                  60.0_dp, 0.5_dp, 1.0_dp], [3, NAT])
+      integer :: rc
+      real(dp), allocatable :: dens(:, :)
+      real(dp) :: g(3, NAT), g_all(3, NAT), g_chunk(3, NAT), g_ref(3, NAT)
+
+      call trc_basis_from_json(DEF2_SVP, NAT, ELEMENTS, R, bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(allow_ecp=.true.))
+      call check(error,.not. err%has_error(), "three I: basis must build: "//err%get_message())
+      if (allocated(error)) return
+      call trc_ecp_from_json(DEF2_SVP, NAT, ELEMENTS, ecp, err)
+      call check(error,.not. err%has_error(), "three I: ECP must read: "//err%get_message())
+      if (allocated(error)) return
+      allocate (dens(bas%nao, bas%nao))
+      call synthetic_density(dens)
+
+      g = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g, err, stats=st)
+      g_all = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g_all, err, screen=.false., stats=st_all)
+      rc = int(c_setenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char, "1"//c_null_char, 1_c_int))
+      g_chunk = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g_chunk, err, stats=st_chunk)
+      rc = int(c_unsetenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char))
+      call dense_reference(bas, ecp, dens, g_ref, err)
+      call check(error,.not. err%has_error(), "three I: "//err%get_message())
+      if (allocated(error)) return
+
+      call global_logger%info("  three I: kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
+                              " tasks ("//to_string(st_all%nkept)//" unscreened), chunks "//to_string(st%nchunk)// &
+                              " and "//to_string(st_chunk%nchunk))
+      call global_logger%info("  three I: max|screened - unscreened| = "//to_string(maxval(abs(g - g_all)), "es10.3")// &
+                              ", |chunked - whole| = "//to_string(maxval(abs(g - g_chunk)), "es10.3")// &
+                              ", |gradient - dense reference| = "//to_string(maxval(abs(g - g_ref)), "es10.3"))
+      call check(error, maxval(abs(g_ref)) > 1.0e-2_dp, "three I: the reference is ~0, the test is blind")
+      if (allocated(error)) return
+      call check(error, st%nkept > 0_int64 .and. st%nkept < st_all%nkept, "three I: the screen must drop tasks")
+      if (allocated(error)) return
+      call check(error, st%nchunk == 1 .and. st_chunk%nchunk == 3, "three I: one chunk, and one per ECP atom when capped")
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - g_all)) < SCREEN_TOL, "three I: screened vs unscreened, max|diff| = "// &
+                 to_string(maxval(abs(g - g_all)), "es12.4"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - g_chunk)) < CHUNK_TOL, "three I: chunked vs whole, max|diff| = "// &
+                 to_string(maxval(abs(g - g_chunk)), "es12.4"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - g_ref)) < CONTRACT_TOL, "three I: vs the dense reference, max|diff| = "// &
+                 to_string(maxval(abs(g - g_ref)), "es12.4"))
+      if (allocated(error)) return
+
+      ! No room for one atom's caches: a status naming the sizes, not an abort.
+      call device_memory_set_cap(1000_int64)
+      call trc_ecp_gradient(bas, ecp, dens, g_chunk, refused)
+      call device_memory_set_cap(0_int64)
+      call check(error, refused%has_error(), "three I: 1000 free bytes of device memory must be refused")
+      if (allocated(error)) return
+      call check(error, index(refused%get_message(), "device memory") > 0, &
+                 "three I: the refusal names the memory: "//refused%get_message())
+      call bas%release()
+      call ecp%release()
+   end subroutine test_screen_chunk
 
    subroutine ints_case(error, name)
       type(error_type), allocatable, intent(out) :: error

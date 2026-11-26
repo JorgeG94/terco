@@ -356,7 +356,7 @@ contains
       end if
       ! the density, two-electron, XC and VV10 terms print nothing until the table at the end
       if (talk) call global_logger%info("  grad: starting the analytic gradient, "//to_string(b%nao)//" basis functions")
-      call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
+      call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10", "ecp"])
       call xst%init("xc grad", xc_grad_step_names())
       call vst%init("vv10 grad", xc_grad_step_names())
       call gst%step_on(lp, 1, tc)
@@ -468,16 +468,21 @@ contains
       end if
 
       !$acc update self(grad)
+
+      ! --- the effective core potential, added on top: into the HOST `grad`
+      ! just fetched, from `dtot` while it is still mapped. ---
+      if (present(ecp)) then
+         if (ecp%has_ecp) then
+            call gst%step_on(lp, 6, tc)
+            call trc_ecp_gradient(b, ecp, dtot, grad, eerr)
+            if (eerr%has_error()) error stop "trc_scf_gradient: the ECP gradient failed: "//eerr%get_message()
+            call gst%step_off(lp, 6, tc)
+         end if
+      end if
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, density)
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call scf_grad_nuclear_repulsion(b, grad)
-      if (present(ecp)) then
-         if (ecp%has_ecp) then
-            call trc_ecp_gradient(b, ecp, dtot, grad, eerr)
-            if (eerr%has_error()) error stop "trc_scf_gradient: the ECP gradient failed: "//eerr%get_message()
-         end if
-      end if
       ! Idempotent on the four-centre term, which two_electron_4c already
       ! projected: an orthogonal projector applied twice is itself.
       if (present(sym) .and. project) call sym_scf_grad_symmetrize(sym%geometry%group, sym%geometry%perm, grad)
