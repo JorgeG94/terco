@@ -143,6 +143,7 @@ V100, one repeat. The sizes below were measured on a Tesla V100-DGXS-32GB
 | `rimp2` | glycine chain x20, cc-pVDZ / cc-pVDZ-RIFIT | RI-MP2 steps | 82 s |
 | `dh` | glycine chain x20, B2PLYP / cc-pVDZ | double hybrid: four-centre SCF with XC, RI-MP2 for the PT2 part | 87 s |
 | `ecp` | 24 CH3I, def2-SVP, iodine ECP | ECP matrix and SCF with an ECP | 46 s |
+| `ecp_grad` | the same, `--grad` | the gradient with the ECP term | 15 s |
 
 One repeat of everything takes about 18 minutes on one V100, so a full
 comparison (a warm-up run and 3 repeats) takes a little over an hour and a

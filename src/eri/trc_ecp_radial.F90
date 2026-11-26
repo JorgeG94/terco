@@ -41,7 +41,7 @@ module trc_ecp_radial
    use pic_types, only: dp
    use trc_ecp_quadrature, only: ECP_NRS, ECP_EXPCUTOFF, ECP_CUTOFF, ECP_LMAX, &
                                  ECP_LEVEL0, ECP_LEVEL_MAX, ecp_quadrature_sph_ine
-   use trc_ecp_angular, only: ECP_ORB_LMAX, ecp_cache_3dfac, CART_POW_Y, CART_POW_Z
+   use trc_ecp_angular, only: ECP_ORB_LMAX, ECP_BRA_LMAX, ecp_cache_3dfac, CART_POW_Y, CART_POW_Z
    implicit none
    private
 
@@ -97,19 +97,18 @@ contains
       !! Radial factors for the type-2 (projected) term, one orbital
       !! shell's primitives against one ECP channel's own angular
       !! momentum `lc`: `facs(i*lilc1+j) `, i = 0..nrs-1 (the level's own
-      !! grid slice), j the lambda ladder 0..li+lc. Fixed-size for
-      !! (ECP_ORB_LMAX, ECP_LMAX); the caller reads only the first
-      !! `nrs*(li+lc+1)` entries.
+      !! grid slice), j the lambda ladder 0..li+lc. ECP_NRS*(li+lc+1)
+      !! entries, of which the first `nrs*(li+lc+1)` are written.
       !$acc routine seq
       integer, intent(in) :: li, np, lc, start, inc, nrs
       real(dp), intent(in) :: rca
       real(dp), intent(in) :: e(np), c(np)
       real(dp), intent(in) :: rs(0:ECP_NRS - 1)
-      real(dp), intent(out) :: facs(0:ECP_NRS*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:ECP_NRS*(li + lc + 1) - 1)
 
       integer :: lilc1, ip, i, j, flat_index
       real(dp) :: ka, ar2, t1, r2, rr
-      real(dp) :: bess(0:ECP_ORB_LMAX + ECP_LMAX)
+      real(dp) :: bess(0:ECP_BRA_LMAX + ECP_LMAX)
 
       lilc1 = li + lc + 1
       facs(0:nrs*lilc1 - 1) = 0.0_dp
@@ -133,13 +132,13 @@ contains
 
    pure subroutine ecp_radial_type1_static_facs(facs, li, ri)
       !! Centre-shift factors for the type-1 term, one block per Cartesian
-      !! component of a shell of angular momentum `li` (<= ECP_ORB_LMAX).
+      !! component of a shell of angular momentum `li` (<= ECP_BRA_LMAX).
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:cart_len(ECP_ORB_LMAX)*(ECP_ORB_LMAX + 1)**3 - 1)
+      real(dp), intent(out) :: facs(0:((li + 1)*(li + 2)/2)*(li + 1)**3 - 1)
 
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       integer :: d1, d2, d3, mi, i, j, k, px, py, pz, ox, oy, oz
 
       d1 = li + 1
@@ -167,7 +166,7 @@ contains
       end do
    end subroutine ecp_radial_type1_static_facs
 
-   pure subroutine ecp_radial_type1_rad_part_levels(rad_levels, lmax, k, aij, ur, rs, ws)
+   pure subroutine ecp_radial_type1_rad_part_levels(rad_levels, ld, lmax, k, aij, ur, rs, ws)
       !! Radial integrals for the type-1 (local) term, one primitive pair,
       !! ALL levels at once: `rad_levels(:, lvl)` is the cumulative value
       !! through level `ECP_LEVEL0+lvl` (lvl=0..ECP_NLEVEL-1), exactly what
@@ -185,15 +184,18 @@ contains
       !! The parity stride is not an optimisation: terms where (lab+i) is
       !! odd integrate to zero over the sphere, so stepping by two skips
       !! exactly what the angular factor would multiply by nothing.
+      !! `ld` >= (lmax+1)^2 is the caller's own leading dimension, as in
+      !! `ecp_radial_type2_lab_levels`; lmax = li + lj <=
+      !! ECP_BRA_LMAX + ECP_ORB_LMAX.
       !$acc routine seq
-      integer, intent(in) :: lmax
+      integer, intent(in) :: ld, lmax
       real(dp), intent(in) :: k, aij
       real(dp), intent(in) :: ur(0:ECP_NRS - 1), rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
-      real(dp), intent(out) :: rad_levels(0:(2*ECP_ORB_LMAX + 1)*(2*ECP_ORB_LMAX + 1) - 1, 0:ECP_NLEVEL - 1)
+      real(dp), intent(out) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)
 
       integer :: lmax1, lab, i, n, lvl, level, nrs0, start, step, nrs
       real(dp) :: kaij, fac, temporary, rn, wtscale, rur0, rpow_n
-      real(dp) :: bess(0:2*ECP_ORB_LMAX)
+      real(dp) :: bess(0:ECP_BRA_LMAX + ECP_ORB_LMAX)
 
       lmax1 = lmax + 1
       kaij = k/(2.0_dp*aij)
