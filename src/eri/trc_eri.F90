@@ -598,7 +598,7 @@ contains
       e = " "
       call get_environment_variable("TRC_BUILD_TIMING", e)
       if (len_trim(e) == 0) return
-      call global_logger%info("  [J engine] size score "//to_string(score)//": "// &
+      call global_logger%info("  J engine: size score "//to_string(score)//": "// &
                               merge("MD J over the all-split basis  ", "bins over the policy's basis   ", md_j))
    end subroutine log_engine_choice
 
@@ -1693,12 +1693,12 @@ contains
       if (this%rank == 0) then
          if (use_mdg) then
             if (kfac /= 0.0_dp) then
-               call global_logger%verbose("  [gradient] Coulomb part: MD J engine; exchange: Rys kernels")
+               call global_logger%verbose("  Gradient, Coulomb part: MD J engine; exchange: Rys kernels")
             else
-               call global_logger%verbose("  [gradient] Coulomb part: MD J engine; no exchange")
+               call global_logger%verbose("  Gradient, Coulomb part: MD J engine; no exchange")
             end if
          else
-            call global_logger%verbose("  [gradient] Coulomb part: fused Rys kernels")
+            call global_logger%verbose("  Gradient, Coulomb part: fused Rys kernels")
          end if
       end if
       jrys = jfac
