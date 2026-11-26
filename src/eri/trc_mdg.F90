@@ -653,13 +653,9 @@ contains
       !! a, on the device, holds at least n elements; contents not kept.
       real(dp), allocatable, intent(inout) :: a(:)
       integer(int64), intent(in) :: n
-      ! Mapped through explicit-shape dummies (map_create/map_delete), never as
-      ! an allocatable: a data clause on an allocatable, whole or as a section,
-      ! also maps its descriptor, and no delete removed that entry (not even with
-      ! `finalize`). It outlived the freed host object, and the next context's
-      ! arrays allocated over it were "partially present" (two MBE fragments in
-      ! one process, exact SCF). The kernels take these buffers assumed-size
-      ! (rb(*), sm(*)) and need only the data.
+      ! Map the data only, through explicit-shape dummies: creating through an
+      ! allocatable dummy (grow's `a`) and deleting as this%wrb left the descriptor
+      ! entry behind.
       if (allocated(a)) then
          if (size(a, kind=int64) >= n) return
          call map_delete(a, size(a, kind=int64))
@@ -763,7 +759,8 @@ contains
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
       if (allocated(this%wrb)) then
-         ! As `grow` mapped them: data only, no descriptor.
+         ! As `grow` mapped them: data only, no descriptor. wsm is always allocated
+         ! when wrb is, because grow is called on both.
          call map_delete(this%wrb, size(this%wrb, kind=int64))
          call map_delete(this%wsm, size(this%wsm, kind=int64))
          deallocate (this%wrb, this%wsm)
