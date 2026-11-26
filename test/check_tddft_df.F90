@@ -13,8 +13,8 @@ module check_tddft_df_suite
    !!  4. the blocked paths against the unblocked one: chunks of eight auxiliary functions (a partial last chunk) with every block
    !!     resident, with none resident (every chunk rebuilt from the packed B inside each application) and with
    !!     some resident, to round-off (`tddft_df_set_blocks`);
-   !!  5. more roots than one pass of vectors holds (NROOTS_MANY gives 18 guesses, more than the 16 vectors of a
-   !!     group and not a multiple of it, the application's own count checked): the roots against a four-centre
+   !!  5. more roots than one pass of vectors holds (NROOTS_MANY gives a first pass of 20 vectors, 18 guesses and a tie
+   !!     extension, more than the 16 of a group; the groups the fitted products formed are checked): the roots against a four-centre
    !!     solve to the fitting error, then with chunks that leave a partial last chunk, resident, rebuilt and
    !!     mixed, against the same solve unblocked, to round-off;
    !!  6. the memory sizing under `device_memory_set_cap`: a cap equal to the bytes the operator needs (the
@@ -33,8 +33,8 @@ module check_tddft_df_suite
    !! to the probe file for generate.py.
    !!
    !! Arguments: xyz basis.json aux.json molname space(cart|sph) funcname probe.bin [mode]. Run from test/.
-   !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4-7 and the release. Items 4-7
-   !! do not depend on the molecule, the functional or the space, so ctest runs them once for HF (exchange on)
+   !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4-7 and the release (5 only with
+   !! the functional hf: it is the long one and needs exchange). Items 4-7 do not depend on the molecule, the functional or the space, so ctest runs them once for HF (exchange on)
    !! and once for PBE (exchange off) on water Cartesian instead of in every program (each costs two SCFs and a dozen solves).
    !!
    use pic_types, only: dp, int64
@@ -73,12 +73,12 @@ module check_tddft_df_suite
    !! Fitted against four-centre excitation energies (hartree): the fitting error of def2-universal-jkfit in the
    !! lowest roots is 1.0e-5 to 1.6e-5 (measured, water and formamide, HF/PBE/B3LYP); a wrong operator (a missing
    !! exchange term, a wrong weight) moves them by 1e-2 or more.
-   real(dp), parameter :: FIT_BOUND_MANY = 1.0e-3_dp
-   !! The same for the NROOTS_MANY lowest roots, whose fitting error is larger (1.4e-4 for the nine of water,
-   !! measured); an operator that reads one vector group's data for another moves them by 1e-2 or more.
+   real(dp), parameter :: FIT_BOUND_MANY = 1.6e-4_dp
+   !! The same for the NROOTS_MANY lowest roots, whose fitting error is larger: 5.5e-5 for the nine of water HF,
+   !! measured (3 times that); the 1e-5 to 1.6e-5 of the lowest three is not reached by the higher roots.
    integer, parameter :: NROOTS = 3
    integer, parameter :: NROOTS_MANY = 9
-   !! 2 NROOTS_MANY = 18 guess vectors in the first application: two groups (16 + 2).
+   !! 2 NROOTS_MANY = 18 guesses, 20 with the tie extension (measured): the first application is two groups (16 + 4).
    real(dp), parameter :: TOL_GROUP_OMEGA = 1.0e-12_dp
    real(dp), parameter :: THRESH = 1.0e-12_dp
 
@@ -135,10 +135,20 @@ contains
          call global_logger%error("check_tddft_df: unknown mode '"//trim(mode_arg)//"' (anchors or extras)")
          error stop 1
       end if
-      if (trim(mode_arg) == "extras") then
+      if (trim(mode_arg) == "extras" .and. trim(funcname_arg) == "hf") then
+         ! The group-major K products exist only with exchange, and the J slicing runs here too: the nine-root
+         ! groups case (47 s of a host XC kernel with PBE) is run once, for HF.
          testsuite = [ &
                      new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
                      new_unittest("several vector groups with partial chunks equal the unblocked solve", test_groups), &
+                     new_unittest("device memory sizing accepts the need and refuses a byte less", test_sizing), &
+                     new_unittest("a spherical auxiliary basis halves the setup block under a cap", test_setup_block), &
+                     new_unittest("refusals", test_refusals), &
+                     new_unittest("release", test_release) &
+                     ]
+      else if (trim(mode_arg) == "extras") then
+         testsuite = [ &
+                     new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
                      new_unittest("device memory sizing accepts the need and refuses a byte less", test_sizing), &
                      new_unittest("a spherical auxiliary basis halves the setup block under a cap", test_setup_block), &
                      new_unittest("refusals", test_refusals), &
@@ -395,11 +405,11 @@ contains
    end subroutine test_blocks
 
    subroutine test_groups(error)
-      !! The first application carries 18 vectors (two groups of the fitted products, 16 and 2) and the chunk size
+      !! The first application carries 20 vectors (two groups of the fitted products, 16 and 4) and the chunk size
       !! leaves a partial last chunk. The unblocked solve of the NROOTS_MANY roots runs the same group-major code
       !! as the blocked ones, so it is no reference for it: it is checked against a four-centre SCF and TDDFT of the
-      !! molecule (an operator that reads one group's slice for every group moves the roots by 1e-2 or more, the
-      !! fitting error is 1e-5), then every block resident, none resident and the first chunks resident, in the TDA
+      !! molecule at the fitting error (a group-dependent mistake of the operator shows there, or as a solve that
+      !! does not converge, as the mutations tried did), then every block resident, none resident and the first chunks resident, in the TDA
       !! and the RPA, against it to round-off.
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: RESIDENT(3) = [-1, 0, 2]
@@ -427,10 +437,22 @@ contains
       call check(error, ref_tda%converged .and. ref_rpa%converged, "the unblocked many-root solves failed: "// &
                  ref_tda%err%get_message()//ref_rpa%err%get_message())
       if (allocated(error)) return
-      ! The most vectors one application was given, not the matvecs of the whole solve: one group would show 16.
-      call check(error, ref_tda%td%max_pass > 16 .and. ref_rpa%td%max_pass > 16, "no application carried more than "// &
-                 "16 vectors (TDA "//to_string(ref_tda%td%max_pass)//", RPA "//to_string(ref_rpa%td%max_pass)// &
-                 "): one group only")
+      ! What the fitted products received, not what the Davidson iteration handed over: two groups formed.
+      call check(error, ref_tda%td%max_apply_grp >= 2 .and. ref_rpa%td%max_apply_grp >= 2, "the fitted products "// &
+                 "formed no second group (TDA "//to_string(ref_tda%td%max_apply_grp)//", RPA "// &
+                 to_string(ref_rpa%td%max_apply_grp)//" groups): one group only")
+      if (allocated(error)) return
+      ! The reservation against reality: nothing reached the products above the budget, and a Davidson pass above
+      ! it was split to the budget (not grown past it).
+      call check(error, ref_tda%td%max_apply_vec <= ref_tda%td%apply_budget .and. &
+                 ref_rpa%td%max_apply_vec <= ref_rpa%td%apply_budget, "a fitted application received more vectors "// &
+                 "than it was budgeted for (TDA "//to_string(ref_tda%td%max_apply_vec)//" of "// &
+                 to_string(ref_tda%td%apply_budget)//", RPA "//to_string(ref_rpa%td%max_apply_vec)//" of "// &
+                 to_string(ref_rpa%td%apply_budget)//")")
+      if (allocated(error)) return
+      call check(error, ref_tda%td%max_apply_vec == min(ref_tda%td%max_pass, ref_tda%td%apply_budget) .and. &
+                 ref_rpa%td%max_apply_vec == min(ref_rpa%td%max_pass, ref_rpa%td%apply_budget), &
+                 "a Davidson pass above the budget was not split to it, or a smaller one was altered")
       if (allocated(error)) return
       ! The independent reference: the four-centre roots, to the fitting error.
       call scf_settings(sopts4, .false.)
@@ -448,14 +470,18 @@ contains
       d_rpa = maxval(abs(ref_rpa%omega - ex_rpa%omega))
       call global_logger%info("tddft df "//to_string(NROOTS_MANY)//" roots vs four-centre: max|d omega| TDA "// &
                               to_string(d_tda, "es10.2")//", RPA "//to_string(d_rpa, "es10.2")//" (bound "// &
-                              to_string(FIT_BOUND_MANY, "es8.1")//"); most vectors in one application TDA "// &
-                              to_string(ref_tda%td%max_pass)//", RPA "//to_string(ref_rpa%td%max_pass))
+                              to_string(FIT_BOUND_MANY, "es8.1")//"); largest Davidson pass TDA "// &
+                              to_string(ref_tda%td%max_pass)//", RPA "//to_string(ref_rpa%td%max_pass)// &
+                              ", at the products "//to_string(ref_tda%td%max_apply_vec)//" and "// &
+                              to_string(ref_rpa%td%max_apply_vec)//" vectors in "//to_string(ref_tda%td%max_apply_grp)// &
+                              " and "//to_string(ref_rpa%td%max_apply_grp)//" groups (budget "// &
+                              to_string(ref_tda%td%apply_budget)//", "//to_string(ref_rpa%td%apply_budget)//")")
       call check(error, d_tda < FIT_BOUND_MANY, "many-root TDA fitted vs four-centre, "//to_string(d_tda, "es10.2"))
       if (allocated(error)) return
       call check(error, d_rpa < FIT_BOUND_MANY, "many-root RPA fitted vs four-centre, "//to_string(d_rpa, "es10.2"))
       if (allocated(error)) return
       ! A pass larger than the scratch was budgeted for (a tie at the guess cut can make one) is served in pieces of
-      ! the budgeted size, not by growing the scratch: 18 vectors in pieces of 5 (a partial last piece) change nothing.
+      ! the budgeted size, not by growing the scratch: 20 vectors in pieces of 5 change nothing.
       call tddft_set_pass_cap(5)
       o%tda = .true.
       call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, tda, fx%dfjk)
@@ -542,7 +568,16 @@ contains
          call device_memory_set_cap(need)
          call dx%setup(fx%dfjk, fx%la, fx%scf%cmo(:, 1:no, 1), fx%scf%cmo(:, no + 1:n, 1), req, err)
          call device_memory_set_cap(0_int64)
+         if (.not. err%has_error()) then
+            ! The formula against the allocations: one application at this cap (chunks of one, none resident),
+            ! then the bytes the object holds beyond the reserve must be the need beyond the reserve, exactly.
+            call apply_once(dx, exchange, no*nv)
+            call check(error, dx%scratch_bytes() == need - DF_RESERVE, "the budgeted bytes ("// &
+                       to_string(need - DF_RESERVE)//") are not the allocated ones ("//to_string(dx%scratch_bytes())// &
+                       "), exchange "//merge("on ", "off", exchange))
+         end if
          call dx%restore(fx%dfjk)
+         if (allocated(error)) return
          call check(error, .not. err%has_error(), "a cap equal to the need ("//to_string(need)//", exchange "// &
                     merge("on ", "off", exchange)//") was refused: "//err%get_message())
          if (allocated(error)) return
@@ -550,6 +585,26 @@ contains
          if (allocated(error)) return
       end do
    end subroutine test_sizing
+
+   subroutine apply_once(dx, exchange, nov)
+      !! One application of one vector (all ones) to `dx`, so its scratch exists.
+      type(df_excitation_t), intent(inout) :: dx
+      logical, intent(in) :: exchange
+      integer, intent(in) :: nov
+      real(dp), allocatable :: x(:, :), jx(:, :), k1(:, :), k2(:, :)
+      allocate (x(nov, 1), jx(nov, 1), k1(nov, 1), k2(nov, 1))
+      x = 1.0_dp
+      jx = 0.0_dp
+      k1 = 0.0_dp
+      k2 = 0.0_dp
+      !$acc enter data copyin(x, jx, k1, k2)
+      if (exchange) then
+         call dx%apply(fx%la, 1, x, jx, k1, k2, .true.)
+      else
+         call dx%apply(fx%la, 1, x, jx, want_k2=.false.)
+      end if
+      !$acc exit data delete(x, jx, k1, k2)
+   end subroutine apply_once
 
    subroutine test_setup_block(error)
       !! `scf_df_choose_setup_block` reads the free memory through `device_memory_free_bytes`, so a cap drives it on the host:

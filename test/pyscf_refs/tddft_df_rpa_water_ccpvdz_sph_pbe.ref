@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_df_water_sph_pbe"] -> gen_tddft_df
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 1d89aaf571639b72aec982ca712a8df72501054a2a4fd4a53c46533d4841fbef
+# hash: 9e36dc56c3cf93763dcac2d1907e3e4709a4f636ca0aafaac6f33aeaa2a4af21
 # files: test/check_tddft_df.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/water.xyz
 E_SCF -7.63334718356685471e+01
 OMEGA 3

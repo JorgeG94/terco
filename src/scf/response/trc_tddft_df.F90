@@ -157,6 +157,8 @@ module trc_tddft_df
       !! Auxiliary functions (a whole number of chunks, or all) whose blocks stay resident.
       integer :: ngrp = 0
       !! Vector groups the group-major scratch below has room for.
+      integer :: max_nvec = 0, max_ngrp = 0
+      !! The most vectors, and vector groups, one `apply` received (what the solve actually asked of the blocks).
       logical :: exchange = .false.
       !! boo and bvv exist (a hybrid reference).
       logical :: k2 = .false.
@@ -181,6 +183,7 @@ module trc_tddft_df
       procedure :: release => df_excitation_release
       procedure :: restore => df_excitation_restore
       procedure :: report => df_excitation_report
+      procedure :: scratch_bytes => df_excitation_scratch_bytes
    end type df_excitation_t
 
 contains
@@ -439,6 +442,8 @@ contains
       nv = this%nvir
       nov = no*nv
       ngrp = (nvec + VMAX - 1)/VMAX
+      this%max_nvec = max(this%max_nvec, nvec)
+      this%max_ngrp = max(this%max_ngrp, ngrp)
       call ensure_scratch(this, ngrp)
       nchunk = (this%naux + this%qblk - 1)/this%qblk
       call this%tbl%step_on(lp, ST_DF_REST, tc)
@@ -483,6 +488,36 @@ contains
       end if
       call this%tbl%step_off(lp, ST_DF_REST, tc)
    end subroutine df_excitation_apply
+
+   function df_excitation_scratch_bytes(this) result(bytes)
+      !! Bytes of the device storage `choose_blocks` budgets, as now allocated: the resident blocks (counted only
+      !! when some are resident, the one-element placeholders are not), the slot, the unpack and half-transform
+      !! scratch, the per-chunk scratch and the group-major vectors. Not the orbitals or the lent packed B.
+      class(df_excitation_t), intent(in) :: this
+      integer(int64) :: bytes
+      bytes = 0
+      if (this%nres > 0) bytes = bytes + blocks_bytes(this%res, this%exchange)
+      bytes = bytes + blocks_bytes(this%slot, this%exchange)
+      if (allocated(this%tens)) bytes = bytes + 8_int64*size(this%tens, kind=int64)
+      if (allocated(this%half)) bytes = bytes + 8_int64*size(this%half, kind=int64)
+      if (allocated(this%w)) bytes = bytes + 8_int64*size(this%w, kind=int64)
+      if (allocated(this%tq)) bytes = bytes + 8_int64*size(this%tq, kind=int64)
+      if (allocated(this%xk)) bytes = bytes + 8_int64*size(this%xk, kind=int64)
+      if (allocated(this%k1t)) bytes = bytes + 8_int64*size(this%k1t, kind=int64)
+      if (allocated(this%xq)) bytes = bytes + 8_int64*size(this%xq, kind=int64)
+      if (allocated(this%k2t)) bytes = bytes + 8_int64*size(this%k2t, kind=int64)
+   end function df_excitation_scratch_bytes
+
+   pure function blocks_bytes(blocks, exchange) result(bytes)
+      !! The blocks' bytes; without exchange `boo` and `bvv` are one-element placeholders, not storage.
+      type(df_blocks_t), intent(in) :: blocks
+      logical, intent(in) :: exchange
+      integer(int64) :: bytes
+      bytes = 0
+      if (allocated(blocks%bov)) bytes = bytes + 8_int64*size(blocks%bov, kind=int64)
+      if (allocated(blocks%boo) .and. exchange) bytes = bytes + 8_int64*size(blocks%boo, kind=int64)
+      if (allocated(blocks%bvv) .and. exchange) bytes = bytes + 8_int64*size(blocks%bvv, kind=int64)
+   end function blocks_bytes
 
    subroutine ensure_scratch(this, ngrp)
       !! The per-application scratch, on the device: the per-chunk intermediates once, the group-major vectors for

@@ -282,9 +282,9 @@ module trc_tddft
    !! The preconditioner's denominator (d - w) is kept at least this far from
    !! zero, sign preserved.
    integer, parameter :: XC_VECTORS_RESERVED = 2
+   !! Trial densities' worth of f_xc scratch the fitted route leaves free on the device beside its MO blocks.
    integer, save :: pass_cap = 0
    !! TESTING (`tddft_set_pass_cap`): at most this many vectors per application of the fitted route, 0 for none.
-   !! Trial densities' worth of f_xc scratch the fitted route leaves free on the device beside its MO blocks.
    integer(int64), parameter :: XC_CACHE_SHARE = 4_int64
    !! The XC cache of a fitted solve takes at most this fraction of the free device memory.
    integer(int64), parameter :: XC_DF_FLOOR = 2147483648_int64
@@ -390,7 +390,15 @@ module trc_tddft
       integer :: nmatvec = 0
       !! Trial vectors multiplied by A in total.
       integer :: max_pass = 0
-      !! The most trial vectors one application of A was given (the first pass carries every guess).
+      !! The most trial vectors the Davidson iteration handed to one application of A: the guesses with their
+      !! tie extension in the first pass, or the corrections (two per unconverged pair for the RPA) later.
+      integer :: apply_budget = 0
+      !! The fitted route's budget `nvec_max`: the vectors one fitted application was sized for; 0 otherwise.
+      integer :: max_apply_vec = 0
+      !! The most vectors the fitted products (`df_excitation_t%apply`) received in one call, after a pass above
+      !! the budget was split into pieces; 0 for the four-centre route.
+      integer :: max_apply_grp = 0
+      !! The most groups of at most 16 vectors one fitted product call formed.
       integer :: nscreened_apply = 0
       !! Matvec passes (calls of `apply`/`apply_rpa`, one per Davidson iteration that had new
       !! vectors) that ran with the density screen on: the operator's own count, read back when
@@ -775,17 +783,19 @@ contains
    end subroutine tddft_subspace_sizes
 
    pure function tddft_max_block(opts, nov) result(nblock)
-      !! The most trial vectors one matvec pass of the solve below can carry: the guesses with the probe's vectors
-      !! (the first and the probe's passes) or the corrections of the Ritz vectors iterated (later passes: one per
-      !! unconverged pair, two for the RPA, which adds the sum and the difference of each), at most the subspace.
-      !! A tie at the guess cut can add more up to the subspace, so a few more are allowed for; the applications
-      !! of the fitted route split a larger pass at this size (`tddft_op_apply`), so it is a bound, not an estimate.
+      !! The vectors one fitted application is budgeted for: the guesses with the probe's vectors (the first and the
+      !! probe's passes) or the corrections of the Ritz vectors iterated (later passes: one per pair, two for the
+      !! RPA, which adds the sum and the difference of each; `nt` pairs is the usual largest), at most the subspace.
+      !! It is a budget, not a bound: a larger pass (a tie at the guess cut, an open window of up to `nkcap` pairs)
+      !! is split into pieces of this size by `tddft_op_apply` and `tddft_op_apply_rpa`, each piece rebuilding the
+      !! non-resident chunks, so the rare larger pass costs time and never memory. Sizing for the RPA's 2 nkcap
+      !! instead would double the XC reservation of every run.
       type(trc_tddft_options_t), intent(in) :: opts
       integer, intent(in) :: nov
       integer :: nblock
       integer :: nt, mmax, nguess, nkcap
       call tddft_subspace_sizes(opts, nov, nt, mmax, nguess, nkcap)
-      nblock = min(mmax, max(nguess + NRAND_PROBE + 4, merge(1, 2, opts%tda)*nkcap))
+      nblock = min(mmax, max(nguess + NRAND_PROBE + 4, merge(1, 2, opts%tda)*nt))
    end function tddft_max_block
 
    subroutine tddft_add_diag(nov, nvec, de, x, ax)
@@ -809,7 +819,9 @@ contains
       !!
       !! ax(:, :, k) := A x(:, :, k) for k = 1..nvec, x and ax HOST arrays
       !! (nocc, nvir, nvec): ONE `fock_split_many_lent` and ONE
-      !! `fxc_apply_many` call whatever nvec is. tmat and gmat stay on the
+      !! `fxc_apply_many` call whatever nvec is (the four-centre route; the fitted
+      !! route serves a pass above `nvec_max` in pieces of that size, each piece
+      !! rebuilding the non-resident chunks of the fitted blocks). tmat and gmat stay on the
       !! device between the two cuBLAS transforms, so what crosses per call is
       !! x up and ax down (nocc nvir nvec doubles each), not nao^2 nvec; the
       !! host still holds tmat, gmat and (functional) vxc, three
@@ -959,7 +971,8 @@ contains
       !! transition densities (j_scale = 4, k_scale = 4 c_x), a second on the
       !! antisymmetric parts, K only (j_scale = 0, `antisymmetric`), only when
       !! c_x /= 0 or `force_antisym`, and ONE `fxc_apply_many` call (the
-      !! symmetric parts), whatever nvec is. With `force_antisym` and c_x = 0
+      !! symmetric parts), whatever nvec is (four-centre route; the fitted route
+      !! splits a pass above `nvec_max` into pieces of that size). With `force_antisym` and c_x = 0
       !! the antisymmetric half of the Fock result is zero and is set without
       !! a launch. The module header derives the products. Scratch is
       !! (nao, nao, 2 nvec) twice, plus (nao, nao, nvec) for a functional.
@@ -1195,7 +1208,8 @@ contains
       !! `tddft_op_apply_rpa` over the fitted integrals: ax(:, :, k, 1) := (A+B) x_k = (e_a - e_i) x + 4 J[x] - c_x
       !! (K1[x] + K2[x]) + 4 f_xc[Ts], ax(:, :, k, 2) := (A-B) x_k = (e_a - e_i) x - c_x (K1[x] - K2[x]), the module
       !! header's products with (pq|rs) = sum_Q B^Q_pq B^Q_rs (K2 only with exchange). One pass over the fitted
-      !! blocks serves both, whatever nvec is.
+      !! blocks serves both, for the nvec of one piece: `tddft_op_apply_rpa` splits a pass above `nvec_max` and every
+      !! piece rebuilds the non-resident chunks.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -2017,6 +2031,11 @@ contains
             end do
          end if
          res%nscreened_apply = op%napply_screened
+      if (op%fitted) then
+         res%apply_budget = op%nvec_max
+         res%max_apply_vec = op%dfx%max_nvec
+         res%max_apply_grp = op%dfx%max_ngrp
+      end if
          call op%release()
          deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                     sp%tp, sp%ord, sp%dgn)
@@ -2182,6 +2201,11 @@ contains
          end if
       end if
       res%nscreened_apply = op%napply_screened
+      if (op%fitted) then
+         res%apply_budget = op%nvec_max
+         res%max_apply_vec = op%dfx%max_nvec
+         res%max_apply_grp = op%dfx%max_ngrp
+      end if
       call op%release()
       deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                  sp%tp, sp%ord, sp%dgn)
