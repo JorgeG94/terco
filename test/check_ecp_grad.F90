@@ -436,10 +436,11 @@ contains
                  to_string(maxval(abs(g - g_ref)), "es12.4"))
       if (allocated(error)) return
 
-      ! The free memory decides the chunks. `st_chunk` ran last, so its
-      ! reserve is the one the next call computes: a first launch has taken
-      ! the local memory a device had still to take. Exactly enough for every
-      ! atom at once is one chunk; one byte less is more than one.
+      ! The free memory decides the chunks. The reserve is the margin alone:
+      ! the launch probe, which runs under the cap too and must leave the
+      ! gradient alone, takes the kernels' local memory before the chunks are
+      ! sized. Exactly enough for every atom at once is one chunk; one byte
+      ! less is more than one.
       whole = st_chunk%chunk_reserve + st_chunk%cache_bytes
       call check(error, st_chunk%atom_bytes_max > 0_int64 .and. st_chunk%cache_bytes > st_chunk%atom_bytes_max, &
                  tag//": more than one ECP atom must hold memory, or no cap can chunk them")

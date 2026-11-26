@@ -127,6 +127,16 @@
 ! device cannot hold them all beside the kernels' local memory
 ! (`ecp_grad_chunk_end`).
 !
+! LOCAL MEMORY. Before a launch, CUDA reserves the largest per-thread stack
+! frame of any kernel launched so far for every thread that can be resident
+! and keeps it: the task kernel's 20,520 B frame (26,568 B for the g-bra one)
+! is 3.4 GB (4.4 GB) on a V100. The free-memory query cannot see it before
+! the launch, and OpenACC reports neither the frame, the stack limit nor the
+! resident threads, so the gradient takes it first: `ecp_grad_probe` runs
+! every kernel of a chunk on one task of its cheapest ECP atom and throws the
+! result away. The free memory the chunks are then sized from already counts
+! the reserve, whatever the device and the compiler made the frames.
+!
 ! f FUNCTIONS. The raised shell of an f function is g. Those derivative
 ! shells, and only those, have K1b columns of their own size (245 KB) and a
 ! second task kernel over their tasks, both in trc_ecp_gbra; the task list
@@ -156,7 +166,7 @@ module trc_ecp
    use trc_sph, only: sph_cart_to_sph
    use trc_cart_perm, only: cart_perm_l2b
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
-   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits, device_memory_local_growth
+   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    implicit none
@@ -185,19 +195,10 @@ module trc_ecp
 #include "inc/trc_ecp_block_sizes.inc"
    integer, parameter :: NFMAX = NFKET                                       !! 10
    integer, parameter :: SLOT_SIZE = NFMAX*NFMAX                             !! 100: one (shell pair, atom) slot
-   integer(int64), parameter :: GRAD_FRAME_BYTES = 20520_int64
-   !! The largest per-thread stack frame a gradient without a g derivative
-   !! bra launches, the task kernel's (K1b's is 4256), 3.4 GB of local memory
-   !! on a V100: `cuobjdump -res-usage` on the linked libterco, NVHPC 26.9,
-   !! cc70. A frame belongs to the compiler and the target architecture, so
-   !! remeasure them for another; the thread count they are multiplied by
-   !! comes from the device.
-   integer(int64), parameter :: GRAD_FRAME_BRA_G_BYTES = 26568_int64
-   !! The same when some task has a g derivative bra (an f basis): the task
-   !! kernel of trc_ecp_gbra (its K1b's is 4256), 4.4 GB on a V100.
    integer(int64), parameter :: GRAD_MARGIN_BYTES = 1024_int64**3
-   !! Left free beside a chunk's caches and the local memory, for what the
-   !! runtime allocates itself and a frame somewhat above those.
+   !! Left free beside a chunk's caches, for what the runtime allocates
+   !! itself; the local memory is taken before the chunks are sized
+   !! (`ecp_grad_probe`).
 
    real(dp), parameter :: ECP_SCREEN_THRESH = 1.0e-20_dp
    !! A (shell pair, ECP atom) task whose bound (see this file's header) is
@@ -772,11 +773,12 @@ contains
          nfail = 0
          if (tk%ntask > 0) then
             !$acc enter data copyin(tk, tk%bra, tk%ket, tk%atm)
+            call ecp_grad_probe(db, ch, tk, density, error)
             atoms = [1, 1]
-            do while (atoms(1) <= ch%natm_ecp)
+            do while (atoms(1) <= ch%natm_ecp .and. .not. error%has_error())
                call ecp_grad_chunk_end(tk, ch%natm_ecp, atoms(1), atoms(2), st%chunk_reserve, error)
                if (error%has_error()) exit
-               call ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail)
+               call ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail, .false.)
                st%nchunk = st%nchunk + 1
                atoms(1) = atoms(2) + 1
             end do
@@ -906,14 +908,79 @@ contains
       end do
    end subroutine ecp_grad_task_list
 
+   subroutine ecp_grad_probe(db, ch, tk, density, error)
+      !! Every kernel of a chunk, once, on one task (and one g-bra task) of the
+      !! ECP atom with the smallest caches, its result thrown away: the launch
+      !! takes the kernels' local memory (this file's header), so that the
+      !! free memory the chunks are sized from counts it. Two atoms when no
+      !! atom has tasks of both kinds. Skipped when the free memory is
+      !! unknown (the host build), there being nothing to size. A refusal if
+      !! the atom's caches do not fit; room for the caches but not the local
+      !! memory still aborts in the launch, which no query can foresee.
+      type(trc_ecp_deriv_basis_t), intent(in) :: db
+      type(trc_ecp_channels_t), intent(in) :: ch
+      type(trc_ecp_grad_tasks_t), intent(in) :: tk
+      real(dp), intent(in) :: density(db%nao, db%nao)
+      type(error_t), intent(inout) :: error
+
+      real(dp) :: grad(3, db%natm)
+      integer(int64) :: free0, free1
+      integer :: a(2)
+      integer :: n, k, nfail
+
+      free0 = device_memory_free_bytes()
+      if (free0 < 0) return
+      ! The cheapest atom with tasks of both kinds; else one of each kind.
+      a = 0
+      a(1) = ecp_grad_cheapest_atom(tk, ch%natm_ecp, .true., tk%ng > 0)
+      if (a(1) == 0) then
+         a(1) = ecp_grad_cheapest_atom(tk, ch%natm_ecp, .true., .false.)
+         a(2) = ecp_grad_cheapest_atom(tk, ch%natm_ecp, .false., .true.)
+      end if
+      grad = 0.0_dp
+      nfail = 0
+      n = 0
+      do k = 1, 2
+         if (a(k) == 0) cycle
+         if (.not. device_memory_fits(error, "trc_ecp_gradient: the launch probe's ECP atom, with its caches,", &
+                                      ecp_grad_atom_bytes(tk, a(k)) + GRAD_MARGIN_BYTES, &
+                                      "use a smaller basis or a device with more memory")) return
+         call ecp_grad_chunk(db, ch, tk, [a(k), a(k)], density, grad, nfail, .true.)
+         n = n + 1
+      end do
+      free1 = device_memory_free_bytes()
+      call global_logger%performance("   ECP gradient: "//to_string(n)//" probe launch(es) took "// &
+                                     to_string(max(free0 - free1, 0_int64)/1000000_int64)// &
+                                     " MB of device memory for the kernels' local memory")
+   end subroutine ecp_grad_probe
+
+   pure integer function ecp_grad_cheapest_atom(tk, natm_ecp, plain, gbra) result(best)
+      !! The ECP atom with the smallest caches among those with an f-or-below
+      !! bra task (if `plain`) and a g-bra task (if `gbra`); 0 for none.
+      type(trc_ecp_grad_tasks_t), intent(in) :: tk
+      integer, intent(in) :: natm_ecp
+      logical, intent(in) :: plain, gbra
+
+      integer :: a
+
+      best = 0
+      do a = 1, natm_ecp
+         if (plain .and. tk%first(a + 1) == tk%first(a)) cycle
+         if (gbra .and. tk%gfirst(a + 1) == tk%gfirst(a)) cycle
+         if (best > 0) then
+            if (ecp_grad_atom_bytes(tk, a) >= ecp_grad_atom_bytes(tk, best)) cycle
+         end if
+         best = a
+      end do
+   end function ecp_grad_cheapest_atom
+
    subroutine ecp_grad_chunk_end(tk, natm_ecp, a0, a1, reserve, error)
       !! The last ECP atom of the chunk starting at `a0`: as many atoms as the
       !! device's free memory, less `reserve`, holds the K1b caches and task
       !! slots of; all of them on the host build and in the usual case. A
-      !! refusal if it does not hold atom `a0` alone. `reserve` is the local
-      !! memory the kernels have still to take (nothing, when an earlier
-      !! kernel with as large a frame, the energy matrix's K1b in an SCF,
-      !! left it reserved) plus GRAD_MARGIN_BYTES.
+      !! refusal if it does not hold atom `a0` alone. `reserve` is
+      !! GRAD_MARGIN_BYTES: `ecp_grad_probe` has taken the local memory, so
+      !! the free memory already leaves it out.
       !! TERCO_ECP_GRAD_ATOM_CHUNK=<k> caps the chunk at k atoms.
       !!
       !! The free memory is the OpenACC runtime's, and NVHPC keeps a pool of
@@ -941,10 +1008,9 @@ contains
 
       a1 = a0
       free = device_memory_free_bytes()
-      reserve = device_memory_local_growth(merge(GRAD_FRAME_BRA_G_BYTES, GRAD_FRAME_BYTES, tk%ng > 0)) &
-                + GRAD_MARGIN_BYTES
+      reserve = GRAD_MARGIN_BYTES
       need = ecp_grad_atom_bytes(tk, a0)
-      if (.not. device_memory_fits(error, "trc_ecp_gradient: one ECP atom, with its caches and the launch reserve,", &
+      if (.not. device_memory_fits(error, "trc_ecp_gradient: one ECP atom, with its caches,", &
                                    need + reserve, "use a smaller basis or a device with more memory")) return
       do while (a1 < natm_ecp)
          if (cap >= 1 .and. a1 - a0 + 1 >= cap) exit
@@ -968,12 +1034,14 @@ contains
               *(3*8_int64 + 3*4_int64)
    end function ecp_grad_atom_bytes
 
-   subroutine ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail)
+   subroutine ecp_grad_chunk(db, ch, tk, atoms, density, grad, nfail, probe)
       !! ECP atoms atoms(1)..atoms(2): K1b over the (shell, group) columns
       !! their tasks read, the task kernel, and the scatter of its slots into
       !! `grad`; both kernels a second time, from trc_ecp_gbra, for the g
       !! shells and their tasks when there are any. `db`, `ch`, `tk`'s task
-      !! arrays and `density` are mapped by `ecp_gradient_run`.
+      !! arrays and `density` are mapped by `ecp_gradient_run`. A `probe`
+      !! (`ecp_grad_probe`) runs the first task of each kind only and leaves
+      !! `grad` and `nfail` alone.
       type(trc_ecp_deriv_basis_t), intent(in) :: db
       type(trc_ecp_channels_t), intent(in) :: ch
       type(trc_ecp_grad_tasks_t), intent(in) :: tk
@@ -981,6 +1049,7 @@ contains
       real(dp), intent(in) :: density(db%nao, db%nao)
       real(dp), intent(inout) :: grad(3, db%natm)
       integer, intent(inout) :: nfail
+      logical, intent(in) :: probe
 
       type(trc_ecp_k1b_cache_t) :: kc, gc
       type(trc_ecp_chunk_t) :: cn
@@ -1000,6 +1069,10 @@ contains
       nt = tk%first(atoms(2) + 1) - t0
       tg0 = tk%gfirst(atoms(1))
       ntg = tk%gfirst(atoms(2) + 1) - tg0
+      if (probe) then
+         nt = min(nt, 1)
+         ntg = min(ntg, 1)
+      end if
       if (nt + ntg == 0) return
       ncol = sum(tk%ncol(atoms(1):atoms(2)))
       ncolg = sum(tk%ncol_g(atoms(1):atoms(2)))
@@ -1030,11 +1103,11 @@ contains
                end if
             end do
          end do
-         do t = tk%first(a) + 1, tk%first(a + 1)
+         do t = tk%first(a) + 1, min(tk%first(a + 1), t0 + nt)
             cn%ci(t - t0) = base + tk%col(tk%bra(t), a) + 1
             cn%cj(t - t0) = base + tk%col(tk%ket(t), a) + 1
          end do
-         do t = tk%gfirst(a) + 1, tk%gfirst(a + 1)
+         do t = tk%gfirst(a) + 1, min(tk%gfirst(a + 1), tg0 + ntg)
             cn%ci(nt + t - tg0) = gbase + tk%col(tk%bra(t), a) + 1
             cn%cj(nt + t - tg0) = base + tk%col(tk%ket(t), a) + 1
          end do
@@ -1083,6 +1156,7 @@ contains
       !$acc update self(cn%w, cn%conv_fail)
       !$acc exit data delete(cn%ci, cn%cj, kc%fac1, kc%fac2, kc%ang2, cn%w, cn%conv_fail)
       !$acc exit data delete(col_sh, col_g, kc, cn)
+      if (probe) return
 
       ! The bra shell's atom takes w, the ECP's atom -w (translational
       ! invariance).
