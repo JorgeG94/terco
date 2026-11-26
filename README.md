@@ -186,7 +186,7 @@ two edits to `fpm.toml`:
 macros = ["TRC_LMAX=2", "TRC_FOCK6", "TERCO_ENABLE_DLFIND"]
 
 [dependencies]
-libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "eadcd7c61aa64bbb57bfe77cf5e3182f7b10167d" }
+libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "b7f353bb165f3175a7d7f547d9e17303f037a44a" }
 ```
 
 then `fpm build` as above. The pin is the commit of terco's libdlfind fork
