@@ -66,6 +66,7 @@ contains
                      new_unittest("CLI --tddft --tddft-approx rpa: energies and ||Y||^2 match pyscf", test_rpa), &
                      new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml), &
                      new_unittest("CLI --tddft on a spherical basis: TDA and RPA match pyscf", test_spherical), &
+                     new_unittest("CLI --df --tddft: TDA and RPA match the fitted pyscf anchors", test_df), &
                      new_unittest("CLI --tddft-missed-root-iterations and its TOML key reach the solver", test_missed_root), &
                      new_unittest("CLI --no-tddft-density-screen and its TOML key reach the solver", test_density_screen) &
                      ]
@@ -177,6 +178,28 @@ contains
       if (.not. allocated(error)) call compare_with_ref(error, "rpa_water_6-31gs_pbe.ref", omega, osc, ynorm, .true.)
       call json%destroy()
    end subroutine test_rpa
+
+   subroutine test_df(error)
+      !! --df is the default def2-universal-jkfit, spherical like cc-pVDZ: the fitted PBE TDA and Hartree-Fock RPA roots
+      !! against pyscf's TDA/TDDFT on mf.density_fit (generate.py's tddft_df cases).
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp), allocatable :: omega(:), osc(:), ynorm(:)
+
+      call run_cli(error, 'water.xyz -b basis_sets/cc-pvdz.json -f pbe --grid 3 --df --tddft --tddft-roots 3', &
+                   g_probe//'.df.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (.not. allocated(error)) call compare_with_ref(error, "tddft_df_water_ccpvdz_sph_pbe.ref", omega, osc, ynorm, .false.)
+      call json%destroy()
+      if (allocated(error)) return
+      call run_cli(error, 'water.xyz -b basis_sets/cc-pvdz.json --grid 3 --df --tddft --tddft-roots 3 --tddft-approx rpa', &
+                   g_probe//'.df_rpa.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (.not. allocated(error)) call compare_with_ref(error, "tddft_df_rpa_water_ccpvdz_sph_hf.ref", omega, osc, ynorm, .true.)
+      call json%destroy()
+   end subroutine test_df
 
    subroutine test_spherical(error)
       !! cc-pVDZ is a spherical basis and no --cart is given: the run folds the orbitals to Cartesian coefficients.
@@ -507,7 +530,9 @@ contains
       if (allocated(error)) return
       call expect_refusal(error, BASE//' --hessian', '.hessian.out', "no Hessian")
       if (allocated(error)) return
-      call expect_refusal(error, BASE//' --df', '.df.out', "--df")
+      call expect_refusal(error, BASE//' --df --grad', '.df.out', "not implemented yet")
+      if (allocated(error)) return
+      call expect_refusal(error, BASE//' --df --opt', '.dfopt.out', "not implemented yet")
       if (allocated(error)) return
       call expect_refusal(error, BASE//' --tddft-roots 2 --tddft-root 3', '.root.out', "must not exceed")
       if (allocated(error)) return

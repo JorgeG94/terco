@@ -3083,6 +3083,42 @@ endforeach()
 # cases (3-39 s) run on every pull request.
 set_tests_properties(terco/check_tddft_sph_formamide_pbe terco/check_tddft_sph_formamide_b3lyp PROPERTIES LABELS LONG)
 
+# TDA and RPA excited states over a density-fitted (--df) reference (src/scf/response/trc_tddft_df.F90),
+# def2-universal-jkfit, against pyscf's TDA/TDDFT on mf.density_fit with the same auxiliary basis
+# (generate.py's tddft_df_* cases): water and formamide, HF, PBE and B3LYP, Cartesian 6-31G* (cart) and
+# spherical cc-pVDZ (sph), energies, oscillator strengths and ||Y||^2; plus the fitted roots against a
+# four-centre run, the blocked and rebuilt chunks against the unblocked solve, and the refusals. See
+# check_tddft_df.F90's own header.
+foreach(_space IN ITEMS cart sph)
+  if(_space STREQUAL "cart")
+    set(_bas basis_sets/6-31gs.json)
+  else()
+    set(_bas basis_sets/cc-pvdz.json)
+  endif()
+  foreach(_mol IN ITEMS water formamide)
+    foreach(_f IN ITEMS hf pbe b3lyp)
+      set(_t check_tddft_df_${_mol}_${_space}_${_f})
+      terco_add_check(${_t} check_tddft_df.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                      ARGS ${_mol}.xyz ${_bas} basis_sets/def2-universal-jkfit.json ${_mol} ${_space} ${_f}
+                           ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_${_mol}_${_space}_${_f}_probe.bin)
+      target_link_libraries(${_t} PRIVATE test-drive::test-drive)
+      set_target_properties(${_t} PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod_${_t})
+      set_tests_properties(terco/${_t} PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+      # LONG: formamide Kohn-Sham, two SCFs and four solves took 150-200 s on a loaded host build; nightly only.
+      if(_mol STREQUAL "formamide" AND NOT _f STREQUAL "hf")
+        set_tests_properties(terco/${_t} PROPERTIES LABELS LONG)
+      endif()
+    endforeach()
+  endforeach()
+endforeach()
+# The same program with the blocked, rebuilt path forced through the environment switches: chunks of seven
+# auxiliary functions, none kept resident, against the same pyscf anchors.
+add_test(NAME terco/check_tddft_df_water_cart_hf_envblocks
+         COMMAND check_tddft_df_water_cart_hf water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json water cart hf
+                 ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_water_cart_hf_env_probe.bin)
+set_tests_properties(terco/check_tddft_df_water_cart_hf_envblocks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=7;TERCO_TDDFT_DF_RESIDENT=0")
+
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
 # several trial densities against one cached collocation, for SVWN (LDA),

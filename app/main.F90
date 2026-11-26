@@ -246,8 +246,9 @@ program trc_main
    call r%cli%add_flag("tddft", "singlet excitation energies, oscillator strengths and (RPA) ||Y||^2 of the lowest "// &
                        "--tddft-roots states after the SCF (closed-shell RHF/RKS; LDA, GGA and "// &
                        "global-hybrid functionals). With --grad the gradient of E_SCF + omega of the root "// &
-                       "--tddft-root, with --opt its geometry optimisation. Refused with triplets, UHF/UKS, "// &
-                       "meta-GGAs, range-separated hybrids, VV10, double hybrids, --df, --pcm, --rimp2, --riccsd "// &
+                       "--tddft-root, with --opt its geometry optimisation (not yet over --df, whose energies "// &
+                       "are the response of the fitted energy). Refused with triplets, UHF/UKS, "// &
+                       "meta-GGAs, range-separated hybrids, VV10, double hybrids, --pcm, --rimp2, --riccsd "// &
                        "and --hessian")
    call r%cli%add_option("tddft-roots", "number of singlet roots wanted (3)")
    call r%cli%add_option("tddft-root", "the root --grad and --opt differentiate, counted from 1 (1); at most "// &

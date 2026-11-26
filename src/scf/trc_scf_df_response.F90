@@ -68,7 +68,7 @@ module trc_scf_df_response
    use pic_logger, only: global_logger
    implicit none
    private
-   public :: df_response_t, df_rotation_t
+   public :: df_response_t, df_rotation_t, scf_df_response_unpack_columns
 
    integer(int64), parameter :: BLOCK_DOUBLES = 268435456_int64
    !! Unpacked B per block, at most 2 GB.
@@ -211,7 +211,7 @@ contains
       !$acc enter data copyin(cmo_d) create(tens, half)
       do p0 = 1, naux, ablk
          np = min(ablk, naux - p0 + 1)
-         call unpack_columns(n, npack, naux, np, p0, dfjk%bpk, tens)
+         call scf_df_response_unpack_columns(n, npack, naux, np, p0, dfjk%bpk, tens)
          ! half(a, nu q) = sum_mu C_v(mu, a) B(mu, nu, q); then per q
          ! B_vv(:, :, q) = half_q C_v and B_vo(:, :, q) = half_q C_o.
          call lp%gemm("T", "N", nv, n*np, n, 1.0_dp, this%cvir, n, tens, n, 0.0_dp, half, nv)
@@ -458,13 +458,13 @@ contains
       do p0 = 1, naux, this%ablk
          np = min(this%ablk, naux - p0 + 1)
          if (p0 <= this%ncache) then
-            call unpack_columns(n, npack, naux, np, p0, dfjk%bpk, this%cache(1, 1, p0))
+            call scf_df_response_unpack_columns(n, npack, naux, np, p0, dfjk%bpk, this%cache(1, 1, p0))
             ! b(:, P, i) = B^P C_o(:, i): items step one P (n elements) in C,
             ! whose columns i are n naux apart.
             gemm_shape = trc_gemm_batch(n, nocc, n, np, ldc=n*naux, sb=0_int64, sc=int(n, int64))
             call lp%gemm_batched(gemm_shape, this%cache(1, 1, p0), this%cmo, this%bocc(1, p0, 1))
          else
-            call unpack_columns(n, npack, naux, np, p0, dfjk%bpk, this%tens)
+            call scf_df_response_unpack_columns(n, npack, naux, np, p0, dfjk%bpk, this%tens)
             gemm_shape = trc_gemm_batch(n, nocc, n, np, ldc=n*naux, sb=0_int64, sc=int(n, int64))
             call lp%gemm_batched(gemm_shape, this%tens, this%cmo, this%bocc(1, p0, 1))
          end if
@@ -543,7 +543,7 @@ contains
             call lp%gemm("N", "N", n, nocc, n*np, 1.0_dp, this%cache(1, 1, p0), n, this%work(1, p0, 1), ld, &
                          merge(0.0_dp, 1.0_dp, p0 == 1), gco, n)
          else
-            call unpack_columns(n, this%npack, naux, np, p0, dfjk%bpk, this%tens)
+            call scf_df_response_unpack_columns(n, this%npack, naux, np, p0, dfjk%bpk, this%tens)
             call lp%gemm("N", "N", n, nocc, n*np, 1.0_dp, this%tens, n, this%work(1, p0, 1), ld, &
                          merge(0.0_dp, 1.0_dp, p0 == 1), gco, n)
          end if
@@ -570,7 +570,7 @@ contains
       this%ready = .false.
    end subroutine df_response_release
 
-   subroutine unpack_columns(n, npack, naux, np, p0, bpk, tens)
+   subroutine scf_df_response_unpack_columns(n, npack, naux, np, p0, bpk, tens)
       !! ----------------------------------------------------------------------
       !! do concurrent kernels: explicit-shape dummies, device-resident arrays.
       !! ----------------------------------------------------------------------
@@ -587,7 +587,7 @@ contains
          q = int(t/(n8*n8)) + 1
          tens(mu, nu, q) = bpk(pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
       end do
-   end subroutine unpack_columns
+   end subroutine scf_df_response_unpack_columns
 
    subroutine pack_doubled(n, npack, x, xpk)
       !! xpk = the lower triangle of x, off-diagonal doubled (B^T xpk = t).

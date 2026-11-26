@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 35
+#define TRC_ABI_MINOR 36
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1299,8 +1299,10 @@ int trc_set_tddft_density_screen(trc_handle_t handle, int on);
  * TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
  * would give -- a triplet, an unrestricted reference, a meta-GGA,
  * range-separated, VV10 or double-hybrid functional, an f basis,
- * --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
- * result held. A geometry optimiser asks this before its first step.
+ * a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+ * result held, and with `gradient` a --df reference (the excited-state gradient over a
+ * fit is not implemented yet; the energies are, ABI 1.36). A geometry optimiser asks this
+ * before its first step.
  * What only a finished SCF knows (functions dropped by canonical
  * orthogonalisation) is not, and cannot be, checked here.
  */
@@ -1315,7 +1317,9 @@ int trc_check_tddft(trc_handle_t handle, int gradient);
  * screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
  * context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
  * trc_tddft_character, trc_tddft_energy. (ABI 1.35: a spherical orbital
- * basis was refused before.)
+ * basis was refused before. ABI 1.36: a --df reference was refused before; it
+ * is now solved over the fit the SCF converged with, and the pair
+ * list is the transition dipoles' alone.)
  *
  * After it, trc_run_gradient is the gradient of the TARGET root's total
  * energy (trc_set_tddft), grid response included unless it was turned

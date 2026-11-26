@@ -157,7 +157,8 @@ refused with `--tddft`: the excited-state gradient has no Hessian to difference.
 
 Refused before the SCF, with the reason: triplets, an open shell, meta-GGAs,
 range-separated hybrids, VV10, double hybrids, an f basis,
-`--df`, `--pcm`, `--rimp2`, `--riccsd`, `--hessian` and more than one rank.
+`--df` with `--grad` or `--opt` (the energies over a fit are implemented, the gradient
+is not yet), `--pcm`, `--rimp2`, `--riccsd`, `--hessian` and more than one rank.
 
 ```sh
 terco water.xyz -b 6-31gs -f pbe --tddft --tddft-roots 4                 # energies

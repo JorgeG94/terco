@@ -586,8 +586,10 @@ contains
    end subroutine df_jk_dims
 
    pure logical function df_jk_is_ready(this) result(r)
+      !! The fit is usable: set up and its packed B in place (not lent to another object, such as
+      !! trc_tddft_df's excitation operator, for the length of a solve).
       class(df_jk_t), intent(in) :: this
-      r = this%ready
+      r = this%ready .and. allocated(this%bpk)
    end function df_jk_is_ready
 
    subroutine df_jk_release(this)

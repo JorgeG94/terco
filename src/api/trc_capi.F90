@@ -233,7 +233,7 @@ module trc_capi
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
-                            trc_tddft_run_gradient, trc_tddft_run_refusal
+                            trc_tddft_run_solve_fitted, trc_tddft_run_gradient, trc_tddft_run_refusal
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect
@@ -374,7 +374,10 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 35
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 36
+   !! 1.36: trc_run_tddft and trc_check_tddft accept a --df (density-fitted) reference, solved over the
+   !! fit its SCF converged with; the TDDFT trc_run_gradient over --df is refused (not implemented yet).
+   !! No signature change.
    !! 1.35: trc_run_tddft, trc_check_tddft and the TDDFT trc_run_gradient accept a
    !! spherical orbital basis (refused before). No signature change.
    !! 1.34: trc_run_gradient accepts --df with a spherical orbital and auxiliary
@@ -6286,8 +6289,10 @@ contains
       !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
       !! would give -- a triplet, an unrestricted reference, a meta-GGA,
       !! range-separated, VV10 or double-hybrid functional, an f basis,
-      !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
-      !! result held. A geometry optimiser asks this before its first step.
+      !! a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+      !! result held, and with `gradient` a --df reference (the excited-state gradient over a
+      !! fit is not implemented yet; the energies are, ABI 1.36). A geometry optimiser asks this
+      !! before its first step.
       !! What only a finished SCF knows (functions dropped by canonical
       !! orthogonalisation) is not, and cannot be, checked here.
       type(c_ptr), value :: handle
@@ -6307,7 +6312,7 @@ contains
          return
       end if
       status = TRC_ERR_UNSUPPORTED
-      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b)
+      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b, gradient=gradient /= 0_c_int)
       if (len_trim(reason) > 0) then
          cx%message = trim(reason)
          return
@@ -6343,7 +6348,9 @@ contains
       !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
       !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
       !! trc_tddft_character, trc_tddft_energy. (ABI 1.35: a spherical orbital
-      !! basis was refused before.)
+      !! basis was refused before. ABI 1.36: a --df reference was refused before; it
+      !! is now solved over the fit the SCF converged with, and the pair
+      !! list is the transition dipoles' alone.)
       !!
       !! After it, trc_run_gradient is the gradient of the TARGET root's total
       !! energy (trc_set_tddft), grid response included unless it was turned
@@ -6392,7 +6399,13 @@ contains
       cx%td_opts%verbose = cx%opts%verbose
       ! The response builds its own engine (as trc_run_polarizability does), so the SCF's would only sit beside it.
       call cx%peri%release()
-      if (tddft_grid_reusable(cx)) then
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         cx%message = "trc_run_tddft: the --df fit of the SCF is gone; run the SCF again"
+         return
+      end if
+      if (cx%opts%df) then
+         call trc_tddft_run_solve_fitted(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%dfjk)
+      else if (tddft_grid_reusable(cx)) then
          call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%kgrid)
       else
          call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td)

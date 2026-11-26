@@ -35,7 +35,15 @@ module trc_tddft_run
    !! triplets, UHF/UKS, meta-GGAs, range-separated hybrids, VV10, double
    !! hybrids, a reference with functions dropped for linear dependence
    !! (`scf%n_lindep > 0`: the dropped-function path is untested), an f basis,
-   !! a root outside 1..nroots.
+   !! a root outside 1..nroots, a continuum solvent, and the GRADIENT of a
+   !! density-fitted reference.
+   !!
+   !! A DENSITY-FITTED REFERENCE (`sopts%df`) is solved over the fit the SCF
+   !! converged with, `dfjk` (the `scf_dfjk` it was run with): the excitation
+   !! energies are those of the fitted energy (trc_tddft's THE FITTED ROUTE),
+   !! the four-centre engine is never built, and the pair list is only the
+   !! transition dipoles'. The excited-state gradient is not implemented over a
+   !! fit yet and is refused.
    !!
    !! SPHERICAL BASES. Every integral, XC and multipole kernel stays Cartesian
    !! (trc_sph.F90's header), so a spherical SCF's orbitals C_sph (nao_sph, nao_sph)
@@ -54,6 +62,7 @@ module trc_tddft_run
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_eri, only: trc_eri_t
+   use trc_scf_df, only: df_jk_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -64,14 +73,14 @@ module trc_tddft_run
    use trc_scf_context, only: trc_grid_cache_t
    use trc_sph, only: sph_mo_to_cart, sph_sph_to_cart
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_reference_t, trc_tddft_solve_rks, &
-                        trc_tddft_refuse_reason
+                        trc_tddft_solve_rks_fitted, trc_tddft_refuse_reason
    use trc_tddft_grad, only: trc_tddft_grad_options_t, trc_tddft_gradient_rks
    use trc_tddft_rpa_grad, only: trc_tddft_rpa_gradient_rks
    implicit none
    private
 
    public :: trc_tddft_run_options_t, trc_tddft_run_result_t
-   public :: trc_tddft_run_solve, trc_tddft_run_gradient, trc_tddft_run_refusal, trc_tddft_run_gap_note
+   public :: trc_tddft_run_solve, trc_tddft_run_solve_fitted, trc_tddft_run_gradient, trc_tddft_run_refusal, trc_tddft_run_gap_note
    public :: trc_tddft_run_pair_label
 
    real(dp), parameter :: SCREEN_NEAR_DEGENERATE = 1.0e-6_dp
@@ -147,6 +156,13 @@ module trc_tddft_run
       !! The solver's own result, amplitudes included, for the gradient.
    end type trc_tddft_run_result_t
 
+   type :: run_request_t
+      !! What a solve was asked for: the occupied count, the SCF's settings and the TDDFT options.
+      integer :: nocc = 0
+      type(trc_scf_options_t) :: sopts
+      type(trc_tddft_run_options_t) :: opts
+   end type run_request_t
+
    type :: run_state_t
       !! What a solve or a gradient builds and tears down.
       type(trc_pairlist_t) :: pl
@@ -161,17 +177,22 @@ module trc_tddft_run
       logical :: from_cache = .false.
       !! The SCF's grid cache supplies the XC grid and its partition; `xg` is unused.
       logical :: built = .false.
+      logical :: eri_built = .false.
+      !! The four-centre engine exists (not for a density-fitted reference, which never uses it).
    end type run_state_t
 
 contains
 
-   function trc_tddft_run_refusal(sopts, opts, b) result(msg)
+   function trc_tddft_run_refusal(sopts, opts, b, gradient) result(msg)
       !! Why this run cannot happen, or an empty string: the solver's own
       !! reasons (functional, spin), an unrestricted reference, an f basis,
-      !! an out-of-range root. Answered from the settings alone.
+      !! an out-of-range root, and with `gradient` the excited-state gradient of
+      !! a density-fitted reference, which is not implemented yet. Answered from
+      !! the settings alone.
       type(trc_scf_options_t), intent(in) :: sopts
       type(trc_tddft_run_options_t), intent(in) :: opts
       type(trc_basis_t), intent(in), optional :: b
+      logical, intent(in), optional :: gradient
       character(len=256) :: msg
       type(trc_tddft_options_t) :: probe
       type(trc_xc_functional_t) :: func
@@ -194,9 +215,12 @@ contains
       if (len_trim(msg) > 0) return
       if (opts%target_root < 1 .or. opts%target_root > opts%nroots) then
          msg = "trc_tddft: the target root "//to_string(opts%target_root)//" is outside 1.."//to_string(opts%nroots)
-      else if (sopts%df) then
-         msg = "trc_tddft: a density-fitted (--df) reference is not implemented"
-      else if (len_trim(sopts%pcm_model) > 0) then
+      else if (sopts%df .and. present(gradient)) then
+         if (gradient) msg = "trc_tddft: the excited-state gradient over a density-fitted (--df) reference is not "// &
+                             "implemented yet"
+      end if
+      if (len_trim(msg) > 0) return
+      if (len_trim(sopts%pcm_model) > 0) then
          msg = "trc_tddft: a continuum solvent has no response here"
       end if
       if (len_trim(msg) > 0) return
@@ -317,7 +341,11 @@ contains
       call run_cartesian_orbitals(b, scf, ccart, dcart)
       call state%pl%build(b, thresh)
       call state%pl%to_device()
-      call state%eri%build(b, thresh, decontract=policy)
+      ! A fitted reference never touches the four-centre engine.
+      if (.not. sopts%df) then
+         call state%eri%build(b, thresh, decontract=policy)
+         state%eri_built = .true.
+      end if
       state%built = .true.
       if (.not. state%dft) then
          call state%ref%set(nocc, ccart, scf%eps(1:size(ccart, 2), 1), dcart)
@@ -357,20 +385,24 @@ contains
       type(run_state_t), intent(inout) :: state
       if (.not. state%built) return
       if (state%own_grid) call state%xg%release()
-      call state%eri%release()
+      if (state%eri_built) call state%eri%release()
       call state%pl%release()
       state%built = .false.
+      state%eri_built = .false.
    end subroutine run_state_release
 
-   subroutine solve_on_state(b, la, state, topts, td, cache)
-      !! The solver on the state's grid, or the cache's.
+   subroutine solve_on_state(b, la, state, topts, td, cache, dfjk)
+      !! The solver on the state's grid, or the cache's; over `dfjk`'s fit when it is given.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(run_state_t), intent(inout) :: state
       type(trc_tddft_options_t), intent(in) :: topts
       type(trc_tddft_result_t), intent(out) :: td
       type(trc_grid_cache_t), intent(inout), optional :: cache
-      if (state%from_cache) then
+      type(df_jk_t), intent(inout), optional :: dfjk
+      if (present(dfjk)) then
+         call trc_tddft_solve_rks_fitted(b, state%pl, la, state%ref, topts, td, dfjk, state%xg)
+      else if (state%from_cache) then
          call trc_tddft_solve_rks(b, state%pl, state%eri, la, state%ref, topts, td, cache%xg)
       else
          call trc_tddft_solve_rks(b, state%pl, state%eri, la, state%ref, topts, td, state%xg)
@@ -444,7 +476,8 @@ contains
       !! `sopts` the settings the SCF ran with): `res%omega`, `res%osc`,
       !! `res%ynorm`, `res%tdip` and the dominant pairs. A refusal or a failed
       !! solve is in `res%err`. `cache` is the SCF's own grid cache, to save
-      !! rebuilding the grid; the Kohn-Sham solve needs no partition.
+      !! rebuilding the grid; the Kohn-Sham solve needs no partition. A density-fitted
+      !! reference (`sopts%df`) is solved by `trc_tddft_run_solve_fitted`, which needs its fit.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
@@ -454,47 +487,99 @@ contains
       type(trc_tddft_run_options_t), intent(in) :: opts
       type(trc_tddft_run_result_t), intent(inout) :: res
       type(trc_grid_cache_t), intent(inout), optional :: cache
+      type(run_request_t) :: req
+
+      req = run_request_t(nocc, sopts, opts)
+      call run_solve(b, la, scf, req, res, cache)
+   end subroutine trc_tddft_run_solve
+
+   subroutine trc_tddft_run_solve_fitted(b, la, scf, nocc, sopts, opts, res, dfjk)
+      !!
+      !! `trc_tddft_run_solve` for a density-fitted (`sopts%df`) reference: the excitation energies of the fitted
+      !! energy, over `dfjk`, the fit the SCF converged with (its `scf_dfjk`; module header). It is returned
+      !! unchanged. The grid of a Kohn-Sham reference is rebuilt from the SCF's settings.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_scf_result_t), intent(in) :: scf
+      integer, intent(in) :: nocc
+      type(trc_scf_options_t), intent(in) :: sopts
+      type(trc_tddft_run_options_t), intent(in) :: opts
+      type(trc_tddft_run_result_t), intent(inout) :: res
+      type(df_jk_t), intent(inout) :: dfjk
+      type(run_request_t) :: req
+
+      req = run_request_t(nocc, sopts, opts)
+      call run_solve(b, la, scf, req, res, dfjk=dfjk)
+   end subroutine trc_tddft_run_solve_fitted
+
+   subroutine run_solve(b, la, scf, req, res, cache, dfjk)
+      !! The body of both solve entries: refusals, the state, the solver (over `dfjk`'s fit when given), the roots.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_scf_result_t), intent(in) :: scf
+      type(run_request_t), intent(in) :: req
+      type(trc_tddft_run_result_t), intent(inout) :: res
+      type(trc_grid_cache_t), intent(inout), optional :: cache
+      type(df_jk_t), intent(inout), optional :: dfjk
       type(run_state_t) :: state
       type(trc_tddft_options_t) :: topts
       character(len=256) :: reason
+      integer :: nfit, naux_fit, npack_fit
 
       call result_reset(res)
-      res%tda = opts%tda
-      reason = trc_tddft_run_refusal(sopts, opts, b)
+      res%tda = req%opts%tda
+      reason = trc_tddft_run_refusal(req%sopts, req%opts, b)
       reason = run_reference_refusal(b, scf, reason)
+      if (len_trim(reason) == 0) then
+         if (req%sopts%df .and. .not. present(dfjk)) then
+            reason = "trc_tddft: a density-fitted (--df) reference is solved by trc_tddft_run_solve_fitted, over the "// &
+                     "fit its SCF converged with"
+         else if (present(dfjk)) then
+            if (.not. req%sopts%df) then
+               reason = "trc_tddft: a fit was given for a reference that is not density-fitted"
+            else if (.not. dfjk%is_ready()) then
+               reason = "trc_tddft: the fit of the density-fitted (--df) reference is gone (it was released)"
+            else
+               call dfjk%dims(nfit, naux_fit, npack_fit)
+               if (nfit /= b%nao) reason = "trc_tddft: the fit was built for another basis ("//to_string(nfit)// &
+                                           " functions against "//to_string(b%nao)//")"
+            end if
+         end if
+      end if
       if (len_trim(reason) > 0) then
          call res%err%set(ERROR_VALIDATION, trim(reason))
          return
       end if
-      call run_state_build(b, scf, nocc, sopts, .false., state, res%err, cache)
+      call run_state_build(b, scf, req%nocc, req%sopts, .false., state, res%err, cache)
       if (res%err%has_error()) then
          call run_state_release(state)
          return
       end if
-      topts%nroots = opts%nroots
-      topts%tda = opts%tda
-      topts%singlet = opts%singlet
-      topts%conv_tol = opts%conv_tol
-      topts%max_iteration = opts%max_iteration
-      topts%missed_root_iterations = opts%missed_root_iterations
-      topts%density_screen = opts%density_screen
-      topts%verbose = opts%verbose
-      call solve_on_state(b, la, state, topts, res%td, cache)
+      topts%nroots = req%opts%nroots
+      topts%tda = req%opts%tda
+      topts%singlet = req%opts%singlet
+      topts%conv_tol = req%opts%conv_tol
+      topts%max_iteration = req%opts%max_iteration
+      topts%missed_root_iterations = req%opts%missed_root_iterations
+      topts%density_screen = req%opts%density_screen
+      topts%verbose = req%opts%verbose
+      call solve_on_state(b, la, state, topts, res%td, cache, dfjk)
       call run_state_release(state)
       if (.not. res%td%converged) then
          res%err = res%td%err
          return
       end if
-      res%nroots = opts%nroots
+      res%nroots = req%opts%nroots
       res%iterations = res%td%iterations
       res%e_scf = scf%energy
       res%omega = res%td%omega
       res%osc = res%td%osc
       res%tdip = res%td%tdip
       if (allocated(res%ynorm)) deallocate (res%ynorm, res%hole, res%particle, res%weight)
-      call characterise(res%td, nocc, res)
+      call characterise(res%td, req%nocc, res)
       res%converged = .true.
-   end subroutine trc_tddft_run_solve
+   end subroutine run_solve
 
    subroutine single_root(td, k, one)
       !! The solver result of root k alone (amplitudes and energy), so the
@@ -540,8 +625,8 @@ contains
          ! The root is checked against the roots the solve produced, not against the options' count.
          solved = opts
          solved%nroots = res%nroots
-         reason = trc_tddft_run_refusal(sopts, solved, b)
-         if (len_trim(reason) == 0 .and. opts%tda .neqv. res%tda) then
+         reason = trc_tddft_run_refusal(sopts, solved, b, gradient=.true.)
+         if (len_trim(reason) == 0 .and. (opts%tda .neqv. res%tda)) then
             reason = "trc_tddft: the gradient's approximation ("//merge("TDA", "RPA", opts%tda)// &
                      ") is not that of the solve ("//merge("TDA", "RPA", res%tda)//")"
          end if

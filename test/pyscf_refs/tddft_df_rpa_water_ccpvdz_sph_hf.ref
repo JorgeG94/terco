@@ -1,0 +1,17 @@
+# terco pyscf reference v1
+# case: tddft_df water/cc-pvdz/sph/hf (rpa singlets, density-fitted)
+# generator: test/pyscf_refs/generate.py CASES["tddft_df_water_sph_hf"] -> gen_tddft_df
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 2d3949e8478181a84aea95cf41385c16f98ebd637df8df03c47c7540b1ede5bb
+# files: test/check_tddft_df.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/water.xyz
+E_SCF -7.60267395835940647e+01
+OMEGA 3
+3.36554191623059606e-01 4.01385505758022954e-01 4.32322725481664671e-01
+OSC 3
+2.92182038617246204e-02 6.72759178249911710e-25 1.01336372417048529e-01
+YY 3
+1.40104530791847811e-03 1.52530502229120319e-03 1.51567119351382336e-03
+CONV_TOL 9.99999999999999999e-15
+GRAD_NORM 1.85762024591020004e-11
+END

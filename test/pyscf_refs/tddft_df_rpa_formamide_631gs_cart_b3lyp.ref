@@ -1,0 +1,17 @@
+# terco pyscf reference v1
+# case: tddft_df formamide/6-31gs/cart/b3lyp (rpa singlets, density-fitted)
+# generator: test/pyscf_refs/generate.py CASES["tddft_df_formamide_cart_b3lyp"] -> gen_tddft_df
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: bdb6ab9a118739a7bb711403ff567e6234e44dda17eaa5b82c7a1f1aeaa6b3a4
+# files: test/check_tddft_df.F90 test/basis_sets/6-31gs.json test/basis_sets/def2-universal-jkfit.json test/formamide.xyz
+E_SCF -1.69887540567682123e+02
+OMEGA 3
+2.16447051855455763e-01 2.84828922488674419e-01 3.00558388089573303e-01
+OSC 3
+1.14222104965428298e-03 1.83438195057298026e-02 3.01394123811151750e-03
+YY 3
+7.34036600850106950e-04 4.57289322278904911e-03 7.96039675589808393e-04
+CONV_TOL 9.99999999999999999e-15
+GRAD_NORM 3.45416087060565251e-11
+END

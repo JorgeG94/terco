@@ -27,7 +27,7 @@ module check_tddft_api_suite
    !!     (A-B is the diagonal, with and without `force_antisym`, which must also leave A+B alone);
    !!  5. what is refused before any work: triplets, meta-GGA, range-separated,
    !!     VV10 and double-hybrid functionals, an f basis, an unknown
-   !!     functional, a root outside 1..nroots, --df and a continuum solvent.
+   !!     functional, a root outside 1..nroots, the --df gradient and a continuum solvent.
    !! Run from test/. A test-drive suite.
    !!
    use pic_types, only: dp, int64
@@ -907,14 +907,15 @@ contains
       call fixture_release(fx)
    end subroutine test_grid_response
 
-   subroutine expect_refusal(error, opts, sopts, word)
-      !! The run is refused, and the message contains `word`.
+   subroutine expect_refusal(error, opts, sopts, word, gradient)
+      !! The run (or, with `gradient`, its gradient) is refused, and the message contains `word`.
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_run_options_t), intent(in) :: opts
       type(trc_scf_options_t), intent(in) :: sopts
       character(len=*), intent(in) :: word
+      logical, intent(in), optional :: gradient
       character(len=256) :: msg
-      msg = trc_tddft_run_refusal(sopts, opts)
+      msg = trc_tddft_run_refusal(sopts, opts, gradient=gradient)
       call check(error, len_trim(msg) > 0, word//" must be refused")
       if (allocated(error)) return
       call check(error, index(msg, word) > 0, "the message for '"//word//"' says: "//trim(msg))
@@ -1005,8 +1006,13 @@ contains
       call expect_refusal(error, opts, sopts, "nosuchfunc")
       if (allocated(error)) return
       sopts%functional = "pbe"
+      ! A fitted reference is solved (check_tddft_df); only its gradient is refused.
       sopts%df = .true.
-      call expect_refusal(error, opts, sopts, "density-fitted")
+      call check(error, len_trim(trc_tddft_run_refusal(sopts, opts)) == 0, "the energies over --df must be accepted")
+      if (allocated(error)) return
+      call expect_refusal(error, opts, sopts, "density-fitted", gradient=.true.)
+      if (allocated(error)) return
+      call expect_refusal(error, opts, sopts, "not implemented yet", gradient=.true.)
       if (allocated(error)) return
       sopts%df = .false.
       sopts%pcm_model = "cpcm"

@@ -4306,6 +4306,141 @@ def gen_tddft_sph(molname, funcname, grad):
     _gen_tddft_sph_one(probe, xyzname, molname, funcname)
 
 
+def _df_dense_roots(td, rpa_, nroots):
+    """The lowest roots of pyscf's own DENSITY-FITTED TDA / RPA matrix, built column by column from the
+    same response function its Davidson uses (td.gen_vind). `get_ab` is no use here: it builds A and B
+    from exact four-centre integrals whatever the reference's density fitting."""
+    vind, _ = td.gen_vind(td._scf)
+    nocc = int((td._scf.mo_occ > 0).sum())
+    nov = nocc * (td._scf.mo_occ.size - nocc)
+    if not rpa_:
+        a = np.asarray(vind(np.eye(nov))).T
+        if np.abs(a - a.T).max() > 1.0e-8:
+            raise ConvergenceError("pyscf's fitted TDA matrix is not symmetric")
+        return np.linalg.eigvalsh(0.5 * (a + a.T))[:nroots]
+    from pyscf.tdscf.rks import CasidaTDDFT
+    if isinstance(td, CasidaTDDFT):
+        # A pure functional: its vind is (A-B)^(1/2) (A+B) (A-B)^(1/2) on X + Y, whose eigenvalues are w^2.
+        m = np.asarray(vind(np.eye(nov))).T
+        return np.sqrt(np.linalg.eigvalsh(0.5 * (m + m.T)))[:nroots]
+    m = np.asarray(vind(np.eye(2 * nov))).T
+    w = np.linalg.eigvals(m)
+    if np.abs(w.imag).max() > 1.0e-8:
+        raise ConvergenceError("pyscf's fitted RPA matrix has complex roots")
+    w = np.sort(w.real[w.real > 1.0e-8])
+    return w[:nroots]
+
+
+def _df_run_td(make_td, rpa_, nroots, label):
+    """pyscf's Davidson for more states than wanted, kept to the lowest `nroots` and required to equal
+    the dense eigenvalues of the fitted matrix (_df_dense_roots)."""
+    dense = _df_dense_roots(make_td(), rpa_, nroots)
+    for extra in (4, 8, 16):
+        td = make_td()
+        td.singlet = True
+        td.nstates = nroots + extra
+        td.conv_tol = 1.0e-6
+        td.max_cycle = 200
+        td.verbose = 0
+        td.kernel()
+        if all(np.atleast_1d(td.converged)[:nroots]) and np.abs(np.asarray(td.e[:nroots]) - dense).max() < 1.0e-7:
+            return td
+    raise ConvergenceError(f"{label}: pyscf's Davidson never converged to the dense lowest {nroots} fitted roots")
+
+
+def gen_tddft_df(molname, space, funcname):
+    """check_tddft_df.F90: TDA and RPA singlets over a density-fitted reference. pyscf runs
+    mf.density_fit(auxbasis=def2-universal-jkfit) on terco's own grid (a functional), tightly converged,
+    and its TDA / TDHF / TDDFT, whose response function uses the same fitted J and K; mol.cart follows
+    `space` (cart: 6-31G*, orbital and auxiliary bases Cartesian; sph: cc-pVDZ, both spherical), as
+    gen_df_grad does. Excitation energies and oscillator strengths do not depend on the AO order. Written:
+    tddft_df_<mol>_<bas>_<space>_<f>.ref (E_SCF, OMEGA, OSC) and tddft_df_rpa_... (and YY)."""
+    PYSCF = {"hf": None, "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    basname, bastag = ("6-31gs", "631gs") if space == "cart" else ("cc-pvdz", "ccpvdz")
+    xyzname = molname + ".xyz"
+    probe_rel = f"tddft_df_{molname}_{space}_{funcname}_probe.bin"
+    run_bin(f"check_tddft_df_{molname}_{space}_{funcname}",
+            [xyzname, f"basis_sets/{basname}.json", "basis_sets/def2-universal-jkfit.json", molname, space,
+             funcname, str(TEST / probe_rel)])
+    r = BinReader(TEST / probe_rel)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    space_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_tda_t = r.f8(nroots)
+    osc_tda_t = r.f8(nroots)
+    om_rpa_t = r.f8(nroots)
+    osc_rpa_t = r.f8(nroots)
+    yy_t = r.f8(nroots)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if (mol_tag, bas_tag, func_tag, space_tag) != (molname, bastag, funcname, space):
+        raise RuntimeError(f"gen_tddft_df {probe_rel}: probe tag mismatch")
+    atoms = _xyz_atoms(molname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_df {probe_rel}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    basfile = TEST / "basis_sets" / (basname + ".json")
+    auxfile = TEST / "basis_sets" / "def2-universal-jkfit.json"
+    bas = bse_json_basis(basfile, elements)
+    aux = bse_json_basis(auxfile, elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=(space == "cart"), unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_df {probe_rel}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+    label = f"tddft_df {molname}/{basname}/{space}/{funcname}"
+
+    def make_mf():
+        if funcname == "hf":
+            m = scf.RHF(mol)
+        else:
+            m = dft.RKS(mol)
+            m.xc = PYSCF[funcname]
+            m.grids.coords = np.ascontiguousarray(pts)
+            m.grids.weights = wts
+            m.grids.non0tab = None
+        return m.density_fit(auxbasis=aux)
+
+    for conv_tol_grad in (1.0e-10, 3.0e-10, 1.0e-9, 3.0e-9, 1.0e-8, 3.0e-8):
+        try:
+            mf, grad_norm = converge_tight(make_mf, None, label, conv_tol=1.0e-14, conv_tol_grad=conv_tol_grad)
+            break
+        except ConvergenceError:
+            if conv_tol_grad == 3.0e-8:
+                raise
+    tda = _df_run_td(mf.TDA, False, nroots, label)
+    rpa = _df_run_td(mf.TDHF if funcname == "hf" else mf.TDDFT, True, nroots, label)
+    om_tda = np.asarray(tda.e, dtype=float)[:nroots]
+    osc_tda = np.asarray(tda.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    om_rpa = np.asarray(rpa.e, dtype=float)[:nroots]
+    osc_rpa = np.asarray(rpa.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in rpa.xy])[:nroots]
+
+    inputs = [TEST / "check_tddft_df.F90", basfile, auxfile, TEST / xyzname]
+    suffix = f"{molname}_{bastag}_{space}_{funcname}.ref"
+    for prefix, kind, fields in (
+            ("tddft_df_", "tda", (("OMEGA", om_tda), ("OSC", osc_tda))),
+            ("tddft_df_rpa_", "rpa", (("OMEGA", om_rpa), ("OSC", osc_rpa), ("YY", yy)))):
+        w = RefWriter(prefix + suffix)
+        w.header(f"{label} ({kind} singlets, density-fitted)", inputs)
+        w.real("E_SCF", mf.e_tot)
+        for tag, vec in fields:
+            w.vector(tag, vec)
+        w.real("CONV_TOL", mf.conv_tol)
+        w.real("GRAD_NORM", grad_norm)
+        w.end()
+        w.write()
+    print(f"  {label}: nao {n}  |dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  "
+          f"TDA |d(omega)| {np.abs(om_tda_t - om_tda).max():.2e} |d(f)| {np.abs(osc_tda_t - osc_tda).max():.2e}  "
+          f"RPA |d(omega)| {np.abs(om_rpa_t - om_rpa).max():.2e} |d(f)| {np.abs(osc_rpa_t - osc_rpa).max():.2e} "
+          f"|d(YY)| {np.abs(yy_t - yy).max():.2e}")
+    (TEST / probe_rel).unlink()
+
+
 def gen_tddft_s1_min():
     """The first singlet excited state (TDA / CIS, RHF/STO-3G) of formaldehyde at the geometry
     test/formaldehyde_s1.xyz, which terco's S1 geometry optimisation converges to
@@ -8080,6 +8215,18 @@ CASES = {
     "tddft_sph_formamide_hf": lambda: gen_tddft_sph("formamide", "hf", True),
     "tddft_sph_formamide_pbe": lambda: gen_tddft_sph("formamide", "pbe", False),
     "tddft_sph_formamide_b3lyp": lambda: gen_tddft_sph("formamide", "b3lyp", False),
+    "tddft_df_water_cart_hf": lambda: gen_tddft_df("water", "cart", "hf"),
+    "tddft_df_water_cart_pbe": lambda: gen_tddft_df("water", "cart", "pbe"),
+    "tddft_df_water_cart_b3lyp": lambda: gen_tddft_df("water", "cart", "b3lyp"),
+    "tddft_df_formamide_cart_hf": lambda: gen_tddft_df("formamide", "cart", "hf"),
+    "tddft_df_formamide_cart_pbe": lambda: gen_tddft_df("formamide", "cart", "pbe"),
+    "tddft_df_formamide_cart_b3lyp": lambda: gen_tddft_df("formamide", "cart", "b3lyp"),
+    "tddft_df_water_sph_hf": lambda: gen_tddft_df("water", "sph", "hf"),
+    "tddft_df_water_sph_pbe": lambda: gen_tddft_df("water", "sph", "pbe"),
+    "tddft_df_water_sph_b3lyp": lambda: gen_tddft_df("water", "sph", "b3lyp"),
+    "tddft_df_formamide_sph_hf": lambda: gen_tddft_df("formamide", "sph", "hf"),
+    "tddft_df_formamide_sph_pbe": lambda: gen_tddft_df("formamide", "sph", "pbe"),
+    "tddft_df_formamide_sph_b3lyp": lambda: gen_tddft_df("formamide", "sph", "b3lyp"),
     "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,

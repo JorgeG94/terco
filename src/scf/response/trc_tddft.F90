@@ -192,6 +192,40 @@ module trc_tddft
    !! silently returned approximate answer. A NaN residual reads as not
    !! converged (`.not. (r < tol)`), as in trc_cpks.
    !!
+   !! THE FITTED ROUTE (--df)
+   !! -----------------------
+   !! A density-fitted reference converged on the fitted energy, so its excitation
+   !! energies are the response of THAT energy: the solver is given the fit
+   !! (`dfjk`, the object the SCF ran with) and every (pq|rs) of the products above
+   !! becomes sum_Q B^Q_pq B^Q_rs with the same B = T L^-T. Term by term, with i, j
+   !! occupied and a, b virtual and J, K1, K2 the three contractions of x
+   !! (trc_tddft_df.F90)
+   !!
+   !!     J[x]_ia  = sum_jb (ia|jb) x_jb          C_occ^T J[T] C_vir
+   !!     K1[x]_ia = sum_jb (ij|ab) x_jb          C_occ^T K[T] C_vir
+   !!     K2[x]_ia = sum_jb (ib|ja) x_jb          C_occ^T K[T^T] C_vir
+   !!
+   !! (T = C_occ x C_vir^T), the matvecs are
+   !!
+   !!     TDA   A x      = (e_a - e_i) x + 2 J - c_x K1 + 2 f_xc
+   !!     RPA   (A+B) x  = (e_a - e_i) x + 4 J - c_x (K1 + K2) + 4 f_xc[Ts]
+   !!           (A-B) x  = (e_a - e_i) x      - c_x (K1 - K2)
+   !!
+   !! which are the four-centre `fock_split_many_lent` / `fock_folded_many_lent`
+   !! results written in the MO basis: J[T^T] = J[T], and K[T] + K[T^T] = 2 K[Ts],
+   !! K[T] - K[T^T] = 2 K[Ta] give K1 + K2 and K1 - K2. A pure functional has no
+   !! exchange (c_x = 0): J and the diagonal only, and the fit needs B_ov alone. The
+   !! XC kernel is NOT fitted: it runs on the grid exactly as in the four-centre
+   !! route, from the same AO transition densities. Everything else (the Davidson
+   !! iteration, the guesses, the missed-root window, the transition dipoles, the
+   !! amplitudes) is shared, only the operator application is replaced. The x and
+   !! A x of an application are the only data that cross the host: the MO blocks
+   !! (nocc nvir naux and, with exchange, nocc^2 naux and nvir^2 naux doubles)
+   !! stay on the device, blocked over the auxiliary index to the free memory.
+   !! The orbitals are the fit's Cartesian AO space (a spherical basis is folded
+   !! to it by `trc_tddft_run`), and a spherical auxiliary basis is already folded
+   !! into B's auxiliary index.
+   !!
    !! WHAT THIS DOES NOT DO
    !! ---------------------
    !! Triplets, UHF/UKS references, meta-GGA, VV10, range-separated and
@@ -211,6 +245,7 @@ module trc_tddft
    use pic_lapack_interfaces, only: pic_syev
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
+   use pic_timer, only: timer_type
    use pic_sorting, only: sort_index
    use pic_rng, only: splitmix64_t, next_real_dp
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -223,11 +258,14 @@ module trc_tddft
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_LDA, XC_FAMILY_GGA
    use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many_lent
+   use trc_scf_df, only: df_jk_t
+   use trc_tddft_df, only: df_excitation_t, tddft_df_combine_tda, tddft_df_combine_tda_j, tddft_df_combine_rpa, &
+                           tddft_df_combine_rpa_j, ST_DF_FXC, ST_DF_REST
    implicit none
    private
 
    public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_reference_t
-   public :: trc_tddft_solve_rks, trc_tddft_refuse_reason
+   public :: trc_tddft_solve_rks, trc_tddft_solve_rks_fitted, trc_tddft_refuse_reason
    public :: tddft_window, tddft_window_t, tddft_space_t
    !! Public for the unit test of the window rule (a synthetic Ritz set).
 
@@ -470,12 +508,22 @@ module trc_tddft
       !! (nao, nocc), (nao, nvir), (nocc, nvir) orbital-energy differences.
       type(trc_xc_functional_t) :: func
       type(trc_xc_fxc_cache_t) :: cache
+      integer :: nvec_max = 16
+      !! Most trial vectors one application will be given (`tddft_max_block`, set by the solver before `setup`): it
+      !! sizes what the fitted route leaves free on the device for them.
+      logical :: rpa = .false.
+      !! The operator is applied through `apply_rpa` (set by the solver before `setup`).
+      logical :: fitted = .false.
+      !! The two-electron products come from the density-fitted MO blocks `dfx` (module header, THE FITTED ROUTE),
+      !! not from the four-centre engine: `setup` was given the fit.
+      type(df_excitation_t) :: dfx
    contains
       procedure :: setup => tddft_op_setup
       procedure :: apply => tddft_op_apply
       procedure :: apply_rpa => tddft_op_apply_rpa
       procedure :: transition_dipoles => tddft_op_dipoles
       procedure :: release => tddft_op_release
+      procedure :: restore_fit => tddft_op_restore_fit
    end type trc_tddft_op_t
 
 contains
@@ -550,7 +598,7 @@ contains
       if (present(budget)) this%budget = budget
    end subroutine tddft_reference_set
 
-   subroutine tddft_op_setup(this, b, la, ref, err, xg)
+   subroutine tddft_op_setup(this, b, la, ref, err, xg, dfjk)
       !!
       !! Keep the orbitals of `ref` on the device and, for a functional, build
       !! the f_xc cache from its ground-state density. `err` is set, and
@@ -565,6 +613,10 @@ contains
       type(trc_xc_grid_t), intent(in), optional :: xg
       !! The grid the SCF converged on, built and on the device; needed for a
       !! functional.
+      type(df_jk_t), intent(inout), optional :: dfjk
+      !! The fit a --df reference converged with: the operator then applies the fitted integrals
+      !! (module header, THE FITTED ROUTE) and the four-centre engine is not used. Its packed B moves into the
+      !! operator until `restore_fit`.
       type(trc_tddft_options_t) :: probe
       character(len=256) :: reason
       integer :: n, nocc, nvir, i, a
@@ -611,18 +663,70 @@ contains
       if (this%dft) call this%cache%setup(b, xg, ref%func, ref%dmat, la)
       this%napply_screened = 0
       this%ready = .true.
+      if (present(dfjk)) then
+         call this%dfx%setup(dfjk, la, this%cocc, this%cvir, this%cx /= 0.0_dp, tddft_df_reserve(this), err)
+         if (err%has_error()) then
+            call this%release()
+            return
+         end if
+         this%fitted = .true.
+      end if
    end subroutine tddft_op_setup
 
+   pure function tddft_df_reserve(this) result(bytes)
+      !! Device bytes the fitted route's applications allocate beside the MO blocks, for the largest block of
+      !! vectors `nvec_max`: x, Ax (twice for the RPA), J, K1 and K2 of the applications (the last two only with
+      !! exchange, K2 only for the RPA), the two half-transforms and, for a functional, the AO transition densities
+      !! and XC response (nao^2 doubles each, per vector) and the XC kernel's own scratch (taken as one more such
+      !! array per vector), and 256 MB of cuBLAS workspace.
+      type(trc_tddft_op_t), intent(in) :: this
+      integer(int64) :: bytes
+      integer(int64) :: nov, nv, n2
+      nov = int(this%nocc, int64)*this%nvir
+      nv = this%nvec_max
+      bytes = 8_int64*nov*nv*(2_int64 + merge(2_int64, 1_int64, this%rpa) + merge(1_int64, 0_int64, this%cx /= 0.0_dp) + &
+                              merge(1_int64, 0_int64, this%rpa .and. this%cx /= 0.0_dp))
+      bytes = bytes + 8_int64*this%nao*(this%nocc + this%nvir) + 268435456_int64
+      if (this%dft) then
+         n2 = int(this%nao, int64)**2
+         bytes = bytes + 8_int64*3_int64*n2*nv
+      end if
+   end function tddft_df_reserve
+
+   pure function tddft_max_block(opts, nov) result(nblock)
+      !! The most trial vectors one matvec pass of the solve below can carry: the guesses with the probe's vectors
+      !! (the first and the probe's passes) or the corrections of the Ritz vectors iterated (later passes), at most
+      !! the subspace. The Davidson sizes follow `tddft_solve_core`'s, and a tie at the guess cut can add more up to
+      !! the subspace, so a few more are allowed for.
+      type(trc_tddft_options_t), intent(in) :: opts
+      integer, intent(in) :: nov
+      integer :: nblock
+      integer :: nr, nt, mmax, nguess, nkcap
+      nr = opts%nroots
+      nt = min(nr + max(2, nr/2), nov)
+      mmax = opts%max_space
+      if (mmax <= 0) mmax = 24*max(nr, 3)
+      mmax = min(max(mmax, merge(3, 4, opts%tda)*nt), nov)
+      nguess = opts%nguess
+      if (nguess <= 0) nguess = max(2*nr, nr + 4)
+      nguess = min(max(nguess, nt), nov, mmax)
+      nkcap = max(nt, min(nt + max(2, nr), mmax/merge(2, 4, opts%tda)))
+      nblock = min(mmax, max(nguess + NRAND_PROBE + 4, nkcap))
+   end function tddft_max_block
+
    subroutine tddft_add_diag(nov, nvec, de, x, ax)
-      !! ax += (e_a - e_i) x for every vector, over the amplitudes flattened
-      !! to one index (the callers pass their (nocc, nvir, nvec) arrays by
-      !! sequence association): a loop over small run-time extents is one
-      !! index here, not a multi-index do concurrent.
+      !! ax += (e_a - e_i) x for every vector, over the amplitudes and the
+      !! vectors flattened to one index (the callers pass their (nocc, nvir,
+      !! nvec) arrays by sequence association): a loop over a small run-time
+      !! extent is one index, not a multi-index do concurrent.
       integer, intent(in) :: nov, nvec
       real(dp), intent(in) :: de(nov), x(nov, nvec)
       real(dp), intent(inout) :: ax(nov, nvec)
+      integer(int64) :: t
       integer :: pair, k
-      do concurrent(k=1:nvec, pair=1:nov)
+      do concurrent(t=0:int(nov, int64)*nvec - 1) local(pair, k)
+         pair = int(mod(t, int(nov, int64))) + 1
+         k = int(t/int(nov, int64)) + 1
          ax(pair, k) = ax(pair, k) + de(pair)*x(pair, k)
       end do
    end subroutine tddft_add_diag
@@ -655,6 +759,10 @@ contains
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
       if (nvec < 1) return
+      if (this%fitted) then
+         call tddft_op_apply_df(this, b, la, nvec, x, ax, xg)
+         return
+      end if
       n = this%nao
       nocc = this%nocc
       nvir = this%nvir
@@ -703,8 +811,11 @@ contains
       integer, intent(in) :: nov, nvec
       real(dp), intent(in) :: de(nov), x(nov, nvec)
       real(dp), intent(inout) :: ax(nov, nvec, 2)
+      integer(int64) :: t
       integer :: pair, k
-      do concurrent(k=1:nvec, pair=1:nov)
+      do concurrent(t=0:int(nov, int64)*nvec - 1) local(pair, k)
+         pair = int(mod(t, int(nov, int64))) + 1
+         k = int(t/int(nov, int64)) + 1
          ax(pair, k, 1) = ax(pair, k, 1) + de(pair)*x(pair, k)
          ax(pair, k, 2) = ax(pair, k, 2) + de(pair)*x(pair, k)
       end do
@@ -791,6 +902,10 @@ contains
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
       if (nvec < 1) return
+      if (this%fitted) then
+         call tddft_op_apply_rpa_df(this, b, la, nvec, x, ax, xg)
+         return
+      end if
       n = this%nao
       nocc = this%nocc
       nvir = this%nvir
@@ -858,6 +973,165 @@ contains
       deallocate (tmat, gmat, vxc, half, half_occ)
    end subroutine tddft_op_apply_rpa
 
+   subroutine tddft_df_xc_density(this, la, nvec, x, symmetrise, tmat)
+      !! tmat(:, :, k) = C_occ x_k C_vir^T, the AO transition densities the XC kernel takes, on the device;
+      !! `symmetrise` replaces each by its symmetric part (the RPA's Ts). `x` is device-resident.
+      type(trc_tddft_op_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
+      logical, intent(in) :: symmetrise
+      real(dp), intent(inout) :: tmat(this%nao, this%nao, nvec)
+      real(dp), allocatable :: half(:, :)
+      integer :: k
+
+      allocate (half(this%nao, this%nvir))
+      !$acc enter data create(half)
+      do k = 1, nvec
+         call la%gemm_mat(this%cocc, x(:, :, k), half)
+         call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
+      end do
+      if (symmetrise) call tddft_split_density(this%nao, nvec, .false., tmat)
+      !$acc exit data delete(half)
+      deallocate (half)
+   end subroutine tddft_df_xc_density
+
+   subroutine tddft_df_add_xc(this, b, la, xg, nvec, tmat, alpha, ax)
+      !! ax(:, :, k) += alpha C_occ^T f_xc[tmat_k] C_vir for every vector: the XC kernel on the grid, exactly as the
+      !! four-centre matvec applies it (it is not fitted). `ax` is device-resident (the first nvec slabs).
+      type(trc_tddft_op_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_xc_grid_t), intent(in) :: xg
+      integer, intent(in) :: nvec
+      real(dp), intent(inout) :: tmat(this%nao, this%nao, nvec)
+      real(dp), intent(in) :: alpha
+      real(dp), intent(inout) :: ax(this%nocc, this%nvir, *)
+      real(dp), allocatable :: vxc(:, :, :), half_occ(:, :)
+      integer :: k
+
+      allocate (vxc(this%nao, this%nao, nvec), half_occ(this%nocc, this%nao))
+      !$acc enter data create(vxc, half_occ)
+      ! Without a budget the routine's default keeps every vector in one pass.
+      if (this%has_budget) then
+         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+      else
+         call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
+      end if
+      do k = 1, nvec
+         call la%gemm_mat(this%cocc, vxc(:, :, k), half_occ, transa="T")
+         call la%gemm_mat(half_occ, this%cvir, ax(:, :, k), alpha=alpha, beta=1.0_dp)
+      end do
+      !$acc exit data delete(vxc, half_occ)
+      deallocate (vxc, half_occ)
+   end subroutine tddft_df_add_xc
+
+   subroutine tddft_op_apply_df(this, b, la, nvec, x, ax, xg)
+      !!
+      !! `tddft_op_apply` over the fitted integrals (module header, THE FITTED ROUTE): ax(:, :, k) := A x(:, :, k) with
+      !! A x = (e_a - e_i) x + 2 J[x] - c_x K1[x] + 2 f_xc, J, K1 from `dfx`
+      !! (trc_tddft_df.F90) and f_xc as the four-centre route applies it. x and ax are HOST arrays; only they
+      !! cross, nocc nvir nvec doubles each way.
+      !!
+      class(trc_tddft_op_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
+      real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec)
+      type(trc_xc_grid_t), intent(in), optional :: xg
+      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :), tmat(:, :, :)
+      integer :: nov
+      type(timer_type) :: tc
+
+      nov = this%nocc*this%nvir
+      allocate (jx(nov, nvec))
+      !$acc enter data copyin(x) create(ax, jx)
+      if (this%cx /= 0.0_dp) then
+         allocate (k1(nov, nvec))
+         !$acc enter data create(k1)
+      end if
+      call this%dfx%apply(la, nvec, x, jx, k1, want_k2=.false.)
+      call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
+      if (this%cx /= 0.0_dp) then
+         call tddft_df_combine_tda(nov, nvec, 2.0_dp, this%cx, jx, k1, ax)
+      else
+         call tddft_df_combine_tda_j(nov, nvec, 2.0_dp, jx, ax)
+      end if
+      call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
+      if (this%dft) then
+         call this%dfx%tbl%step_on(la, ST_DF_FXC, tc)
+         allocate (tmat(this%nao, this%nao, nvec))
+         !$acc enter data create(tmat)
+         call tddft_df_xc_density(this, la, nvec, x, .false., tmat)
+         call tddft_df_add_xc(this, b, la, xg, nvec, tmat, 2.0_dp, ax)
+         !$acc exit data delete(tmat)
+         deallocate (tmat)
+         call this%dfx%tbl%step_off(la, ST_DF_FXC, tc)
+      end if
+      call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
+      call tddft_add_diag(nov, nvec, this%de, x, ax)
+      !$acc update self(ax)
+      !$acc exit data delete(x, ax, jx)
+      if (allocated(k1)) then
+         !$acc exit data delete(k1)
+      end if
+      call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
+   end subroutine tddft_op_apply_df
+
+   subroutine tddft_op_apply_rpa_df(this, b, la, nvec, x, ax, xg)
+      !!
+      !! `tddft_op_apply_rpa` over the fitted integrals: ax(:, :, k, 1) := (A+B) x_k = (e_a - e_i) x + 4 J[x] - c_x
+      !! (K1[x] + K2[x]) + 4 f_xc[Ts], ax(:, :, k, 2) := (A-B) x_k = (e_a - e_i) x - c_x (K1[x] - K2[x]), the module
+      !! header's products with (pq|rs) = sum_Q B^Q_pq B^Q_rs (K2 only with exchange). One pass over the fitted
+      !! blocks serves both, whatever nvec is.
+      !!
+      class(trc_tddft_op_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
+      real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec, 2)
+      type(trc_xc_grid_t), intent(in), optional :: xg
+      real(dp), allocatable :: jx(:, :), k1(:, :), k2(:, :), tmat(:, :, :)
+      integer :: nov
+      type(timer_type) :: tc
+
+      nov = this%nocc*this%nvir
+      allocate (jx(nov, nvec))
+      !$acc enter data copyin(x) create(ax, jx)
+      if (this%cx /= 0.0_dp) then
+         allocate (k1(nov, nvec), k2(nov, nvec))
+         !$acc enter data create(k1, k2)
+      end if
+      call this%dfx%apply(la, nvec, x, jx, k1, k2, this%cx /= 0.0_dp)
+      call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
+      if (this%cx /= 0.0_dp) then
+         call tddft_df_combine_rpa(nov, nvec, this%cx, jx, k1, k2, ax)
+      else
+         call tddft_df_combine_rpa_j(nov, nvec, jx, ax)
+      end if
+      call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
+      if (this%dft) then
+         call this%dfx%tbl%step_on(la, ST_DF_FXC, tc)
+         allocate (tmat(this%nao, this%nao, nvec))
+         !$acc enter data create(tmat)
+         call tddft_df_xc_density(this, la, nvec, x, .true., tmat)
+         call tddft_df_add_xc(this, b, la, xg, nvec, tmat, 4.0_dp, ax)
+         !$acc exit data delete(tmat)
+         deallocate (tmat)
+         call this%dfx%tbl%step_off(la, ST_DF_FXC, tc)
+      end if
+      call this%dfx%tbl%step_on(la, ST_DF_REST, tc)
+      call tddft_add_diag_rpa(nov, nvec, this%de, x, ax)
+      !$acc update self(ax)
+      !$acc exit data delete(x, ax, jx)
+      if (allocated(k1)) then
+         !$acc exit data delete(k1, k2)
+      end if
+      call this%dfx%tbl%step_off(la, ST_DF_REST, tc)
+   end subroutine tddft_op_apply_rpa_df
+
    subroutine tddft_op_dipoles(this, b, pl, la, nvec, x, tdip)
       !! tdip(:, k) = sqrt(2) sum_ia x(i, a, k) <i|r|a>, the singlet transition
       !! dipole of an excitation with unit-norm amplitudes, origin at zero
@@ -897,12 +1171,23 @@ contains
       deallocate (dip, dmo, half)
    end subroutine tddft_op_dipoles
 
+   subroutine tddft_op_restore_fit(this, dfjk)
+      !! Hand the fit's packed B back to `dfjk` (a no-op for an operator without a fit). Call it after `release`.
+      class(trc_tddft_op_t), intent(inout) :: this
+      type(df_jk_t), intent(inout) :: dfjk
+      call this%dfx%restore(dfjk)
+   end subroutine tddft_op_restore_fit
+
    subroutine tddft_op_release(this)
       class(trc_tddft_op_t), intent(inout) :: this
       if (this%ready) then
          !$acc exit data delete(this%cocc, this%cvir, this%de)
       end if
       call this%cache%release()
+      ! The step table of a fitted solve: where its matvecs spent their time.
+      if (this%fitted) call this%dfx%report(sum(this%dfx%tbl%t))
+      call this%dfx%release()
+      this%fitted = .false.
       if (allocated(this%cocc)) deallocate (this%cocc)
       if (allocated(this%cvir)) deallocate (this%cvir)
       if (allocated(this%de)) deallocate (this%de)
@@ -1389,6 +1674,22 @@ contains
       end if
    end subroutine tddft_rpa_iterate
 
+   function tddft_refusal(b, ref, opts) result(reason)
+      !! Why this solve cannot run, or an empty string: the options, the functional, the basis' highest angular
+      !! momentum and the multipole integrals the transition dipole needs.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_tddft_reference_t), intent(in) :: ref
+      type(trc_tddft_options_t), intent(in) :: opts
+      character(len=256) :: reason
+      if (ref%dft) then
+         reason = trc_tddft_refuse_reason(opts, ref%func, lmax=maxval(b%sh_l))
+      else
+         reason = trc_tddft_refuse_reason(opts, lmax=maxval(b%sh_l))
+      end if
+      if (len_trim(reason) == 0) reason = integrals_multipole_lmax_refusal(b)
+      if (len_trim(reason) > 0) reason = "trc_tddft: "//trim(reason)
+   end function tddft_refusal
+
    subroutine trc_tddft_solve_rks(b, pl, eri, la, ref, opts, res, xg)
       !!
       !! The lowest `opts%nroots` singlet roots (TDA, or the RPA when
@@ -1408,32 +1709,14 @@ contains
       type(trc_tddft_options_t), intent(in) :: opts
       type(trc_tddft_result_t), intent(out) :: res
       type(trc_xc_grid_t), intent(in), optional :: xg
-
       type(trc_tddft_op_t) :: op
-      real(dp), allocatable :: hsub(:, :), csub(:, :), wsub(:)
-      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
-      type(tddft_space_t) :: sp
-      real(dp) :: den
-      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff, nkc
-      type(tddft_window_t) :: win
-      integer :: xiter
-      integer(default_int) :: linfo
       character(len=256) :: reason
-      character(len=1024) :: logline
-      logical :: done, probed
-      real(dp) :: buffer_threshold
 
       res%converged = .false.
       res%nroots = opts%nroots
-      reason = ""
-      if (ref%dft) then
-         reason = trc_tddft_refuse_reason(opts, ref%func, lmax=maxval(b%sh_l))
-      else
-         reason = trc_tddft_refuse_reason(opts, lmax=maxval(b%sh_l))
-      end if
-      if (len_trim(reason) == 0) reason = integrals_multipole_lmax_refusal(b)
+      reason = tddft_refusal(b, ref, opts)
       if (len_trim(reason) > 0) then
-         call tddft_fail(res, ERROR_VALIDATION, "trc_tddft: "//trim(reason))
+         call tddft_fail(res, ERROR_VALIDATION, trim(reason))
          return
       end if
       call op%setup(b, la, ref, res%err, xg)
@@ -1442,10 +1725,76 @@ contains
          call op%release()
          return
       end if
-      op%density_screen = opts%density_screen
-      if (.not. opts%density_screen) call global_logger%warning(SCREEN_OFF_MSG)
+      call tddft_solve_core(b, pl, eri, la, op, opts, res, xg)
+   end subroutine trc_tddft_solve_rks
 
-      nocc = ref%nocc
+   subroutine trc_tddft_solve_rks_fitted(b, pl, la, ref, opts, res, dfjk, xg)
+      !!
+      !! `trc_tddft_solve_rks` over a density-fitted (--df) reference: the matvec's two-electron products are the
+      !! fitted ones, from `dfjk`, the object the SCF ran with (module header, THE FITTED ROUTE), and no four-centre
+      !! engine is involved. `dfjk` is unchanged on return (its packed B lent to the operator meanwhile).
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_tddft_reference_t), intent(in) :: ref
+      type(trc_tddft_options_t), intent(in) :: opts
+      type(trc_tddft_result_t), intent(out) :: res
+      type(df_jk_t), intent(inout) :: dfjk
+      type(trc_xc_grid_t), intent(in), optional :: xg
+      type(trc_tddft_op_t) :: op
+      type(trc_eri_t) :: eri
+      !! Never built: the fitted operator does not read it.
+      character(len=256) :: reason
+
+      res%converged = .false.
+      res%nroots = opts%nroots
+      reason = tddft_refusal(b, ref, opts)
+      if (len_trim(reason) > 0) then
+         call tddft_fail(res, ERROR_VALIDATION, trim(reason))
+         return
+      end if
+      op%nvec_max = tddft_max_block(opts, ref%nocc*(size(ref%cmo, 2) - ref%nocc))
+      op%rpa = .not. opts%tda
+      call op%setup(b, la, ref, res%err, xg, dfjk)
+      if (res%err%has_error()) then
+         res%converged = .false.
+         call op%release()
+         call op%restore_fit(dfjk)
+         return
+      end if
+      call tddft_solve_core(b, pl, eri, la, op, opts, res, xg)
+      call op%restore_fit(dfjk)
+   end subroutine trc_tddft_solve_rks_fitted
+
+   subroutine tddft_solve_core(b, pl, eri, la, op, opts, res, xg)
+      !! The block Davidson iteration of the module header over the operator `op`, set up and ready, which this
+      !! releases on every path out; fills `res`.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_eri_t), intent(inout) :: eri
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_tddft_op_t), intent(inout) :: op
+      type(trc_tddft_options_t), intent(in) :: opts
+      type(trc_tddft_result_t), intent(inout) :: res
+      type(trc_xc_grid_t), intent(in), optional :: xg
+
+      real(dp), allocatable :: hsub(:, :), csub(:, :), wsub(:)
+      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
+      type(tddft_space_t) :: sp
+      real(dp) :: den
+      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff, nkc
+      type(tddft_window_t) :: win
+      integer :: xiter
+      integer(default_int) :: linfo
+      character(len=1024) :: logline
+      logical :: done, probed
+      real(dp) :: buffer_threshold
+
+      op%density_screen = opts%density_screen
+      if (.not. opts%density_screen .and. .not. op%fitted) call global_logger%warning(SCREEN_OFF_MSG)
+
+      nocc = op%nocc
       nvir = op%nvir
       nov = nocc*nvir
       nr = opts%nroots
@@ -1689,6 +2038,6 @@ contains
       call op%release()
       deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                  sp%tp, sp%ord, sp%dgn)
-   end subroutine trc_tddft_solve_rks
+   end subroutine tddft_solve_core
 
 end module trc_tddft
