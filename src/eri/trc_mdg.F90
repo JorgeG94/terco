@@ -653,14 +653,35 @@ contains
       !! a, on the device, holds at least n elements; contents not kept.
       real(dp), allocatable, intent(inout) :: a(:)
       integer(int64), intent(in) :: n
+      ! Mapped through explicit-shape dummies (map_create/map_delete), never as
+      ! an allocatable: a data clause on an allocatable, whole or as a section,
+      ! also maps its descriptor, and no delete removed that entry (not even with
+      ! `finalize`). It outlived the freed host object, and the next context's
+      ! arrays allocated over it were "partially present" (two MBE fragments in
+      ! one process, exact SCF). The kernels take these buffers assumed-size
+      ! (rb(*), sm(*)) and need only the data.
       if (allocated(a)) then
          if (size(a, kind=int64) >= n) return
-         !$acc exit data delete(a)
+         call map_delete(a, size(a, kind=int64))
          deallocate (a)
       end if
       allocate (a(max(n, 1_int64)))
-      !$acc enter data create(a)
+      call map_create(a, size(a, kind=int64))
    end subroutine grow
+
+   subroutine map_create(x, n)
+      !! Device copy of x's data, uninitialised; no descriptor is mapped.
+      integer(int64), intent(in) :: n
+      real(dp), intent(inout) :: x(n)
+      !$acc enter data create(x)
+   end subroutine map_create
+
+   subroutine map_delete(x, n)
+      !! Removes the device copy map_create made.
+      integer(int64), intent(in) :: n
+      real(dp), intent(inout) :: x(n)
+      !$acc exit data delete(x)
+   end subroutine map_delete
 
    subroutine count_window(this, md, w, sz, dsh, sc)
       !! Stats: a window's quartets, how many pass the per-quartet screen
@@ -742,7 +763,9 @@ contains
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
       if (allocated(this%wrb)) then
-         !$acc exit data delete(this%wrb, this%wsm)
+         ! As `grow` mapped them: data only, no descriptor.
+         call map_delete(this%wrb, size(this%wrb, kind=int64))
+         call map_delete(this%wsm, size(this%wsm, kind=int64))
          deallocate (this%wrb, this%wsm)
       end if
       this%ngrp = 0
