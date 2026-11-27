@@ -1,0 +1,5 @@
+3
+water, distorted to C1 (no symmetry: every gradient component is nonzero): the RI-CCSD(T) gradient reference molecule, Angstrom
+O   0.000000   0.000000   0.117000
+H   0.000000   0.757000  -0.469000
+H   0.100000  -0.757000  -0.469000
