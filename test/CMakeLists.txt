@@ -224,6 +224,20 @@ set_tests_properties(
   PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
              "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_LAMBDA_WOOVO_CHUNK=2")
 
+# One update of the CCSD Lambda equations (src/post_hf/ccsd/trc_rccsd_lambda_update.F90) at random amplitudes and
+# multipliers: against pyscf's dense update_lambda in host loops (rccsd_lambda_host), against a finite-difference
+# adjoint of terco's own CCSD residual, every ladder form and forced small blocks, and the refusals. No reference
+# file. The second entry caps the blocks of the intermediates and of the half ladder from the environment.
+terco_add_check(check_rccsd_lambda_update check_rccsd_lambda_update.F90 NEEDS_BASIS)
+target_sources(check_rccsd_lambda_update PRIVATE rccsd_lambda_host.F90)
+target_link_libraries(check_rccsd_lambda_update PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_lambda_update PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_lambda_update_chunked COMMAND check_rccsd_lambda_update)
+set_tests_properties(
+  terco/check_rccsd_lambda_update_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_LAMBDA_WOOVO_CHUNK=2;TERCO_RCCSD_LADDER_D_CHUNK=1")
+
 # The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
 # _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
 # plus an independent host implementation of update_amps and DIIS on a linear problem. Same SKIP guard.
@@ -265,6 +279,12 @@ set_target_properties(terco_ccsd_grad_support PROPERTIES Fortran_MODULE_DIRECTOR
 terco_add_check(check_ccsd_grad_ref check_ccsd_grad_ref.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ccsd_grad_ref PRIVATE test-drive::test-drive terco_ccsd_grad_support)
 set_tests_properties(terco/check_ccsd_grad_ref PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The RI-CCSD Lambda solver (src/post_hf/ccsd/trc_rccsd_lambda.F90) against the Lambda norms and overlaps of the same
+# references (it reads them, it is not on their "# files:" lines), DIIS on device and host, non-convergence, refusals.
+terco_add_check(check_rccsd_lambda check_rccsd_lambda.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_lambda PRIVATE test-drive::test-drive terco_ccsd_grad_support)
+set_tests_properties(terco/check_rccsd_lambda PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 terco_add_check(check_ccsd_grad_fd check_ccsd_grad_fd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ccsd_grad_fd PRIVATE test-drive::test-drive terco_ccsd_grad_support)

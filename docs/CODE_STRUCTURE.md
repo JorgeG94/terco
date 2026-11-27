@@ -22,7 +22,7 @@ A module may use modules in its own layer or any layer above it in this table
 | `xc` | `src/xc/` | XC integration, functionals, VV10 |
 | `solvation` | `src/solvation/` | PCM |
 | `scf` | `src/scf/` | SCF driver, DIIS, DF-JK, SOSCF, restart; `guess/`, `gradient/`, `response/` (CPHF/CPKS), `analysis/`, `vibration/` |
-| `post_hf` | `src/post_hf/` | RI-MP2 energy and gradient (built on the SCF's results, Z-vector and gradient pieces) in `rimp2/`; closed-shell RI-CCSD and RI-CCSD(T) energies, and the once-per-solve intermediates of the CCSD Lambda equations, in `ccsd/` |
+| `post_hf` | `src/post_hf/` | RI-MP2 energy and gradient (built on the SCF's results, Z-vector and gradient pieces) in `rimp2/`; closed-shell RI-CCSD and RI-CCSD(T) energies, and the CCSD Lambda equations (intermediates, linear update, DIIS solver; Fortran only), in `ccsd/` |
 | `api` | `src/api/` | Fortran API and C ABI |
 | `opt` | `src/opt/` | The geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` with `trc_opt_capi.F90`'s own C ABI (`include/terco_opt.h`) -- only with `-DTERCO_ENABLE_DLFIND=ON`, see that option's own comment in the root `CMakeLists.txt` |
 | `app` | `app/` | The `terco` CLI |

@@ -14,6 +14,8 @@ target_sources(
           trc_rccsd_share.F90           # RI-CCSD(T): the d ranges of the ladder over the ranks of a run
           trc_rccsd_dist.F90            # RI-CCSD(T): the top of an iteration over ranks, and a follower's loop
           trc_rccsd_driver.F90        # RI-CCSD(T): the iteration driver, convergence, result and handle
+          trc_rccsd_lambda_update.F90  # RI-CCSD Lambda: one update of l1, l2, no o v^3 or v^4 array
+          trc_rccsd_lambda.F90         # RI-CCSD Lambda: the iteration, DIIS, convergence, refusals
           trc_rccsd_triples_dev.F90   # RI-CCSD(T): the (T) correction on the device, tiled gemms and one energy kernel
           trc_rccsd_triples_ijk.F90   # RI-CCSD(T): the (T) correction on the device, driven by occupied triples
           trc_rccsd_triples.F90       # RI-CCSD(T): the (T) correction, host reference (Rendell-Lee-Komornicki)
