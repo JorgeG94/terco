@@ -94,8 +94,8 @@ module trc_rccsd_lambda_update
 
    type :: trc_rccsd_lambda_update_options_t
       !! What `init` may be told. Plain values only.
-      type(trc_rccsd_ladder_options_t) :: ladder  !! form and batch sizes of the ladder on l2
-      type(trc_rccsd_lambda_options_t) :: inter   !! passed to the build of the intermediates
+      type(trc_rccsd_ladder_options_t) :: ladder = trc_rccsd_ladder_options_t()  !! form and batch sizes of the ladder on l2
+      type(trc_rccsd_lambda_options_t) :: inter = trc_rccsd_lambda_options_t()   !! passed to the build of the intermediates
    end type trc_rccsd_lambda_update_options_t
 
    type :: trc_rccsd_lambda_update_t
