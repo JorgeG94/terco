@@ -75,7 +75,7 @@ a scratch copy or worktree, because the converters rewrite `src/` in place:
 
 ```sh
 python3 tools/dc_locality_lint.py src
-python3 -m pytest tools/test_acc_to_omp.py -q
+python3 -m pytest tools/test_acc_to_omp.py tools/test_dc_to_omp.py -q
 python3 tools/dc_to_omp.py  --target cpu --write src
 python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \

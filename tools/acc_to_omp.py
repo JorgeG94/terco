@@ -33,6 +33,7 @@ Clause translations (applied across the directive block — head + continuations
   create(  → map(alloc:
   delete(  → map(delete:
   self(    → from(    (only on update directives)
+  host(    → from(    (synonym of self)
   device(  → to(      (only on update directives)
 
 Stripped (OpenACC-only, no OpenMP equivalent — emit as-is would fail):
@@ -108,6 +109,12 @@ HEAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     #
     (re.compile(r"!\$acc\s+atomic\b", re.IGNORECASE),
      None, "atomic"),
+    # The closing line of the block form (`atomic capture` ... `end atomic`).
+    # OpenMP needs the matching `!$omp end atomic` once the opening line has
+    # been translated; left as `!$acc end atomic` it is an inert comment and
+    # the block no longer ends.
+    (re.compile(r"!\$acc\s+end\s+atomic\b", re.IGNORECASE),
+     None, "end_atomic"),
     (re.compile(r"!\$acc\s+routine\s+seq\b", re.IGNORECASE),
      "!$omp declare target", "routine_seq"),
     (re.compile(r"!\$acc\s+declare\s+create\s*\(", re.IGNORECASE),
@@ -157,6 +164,7 @@ CLAUSE_MAP_DATA = {
 }
 CLAUSE_MAP_UPDATE = {
     "self":   "from(",
+    "host":   "from(",     # OpenACC's synonym for self(); OpenMP has no host()
     "device": "to(",
 }
 CLAUSE_RE_DATA = re.compile(
@@ -510,6 +518,11 @@ def transform_block(block: list[str], stats: Counter, warnings: list[str],
                                     joined, count=1, flags=re.IGNORECASE)
                     stats["atomic"] += 1
                     return joined.splitlines(keepends=True)
+                if name == "end_atomic" and TRANSLATE_ATOMICS:
+                    joined = re.sub(r"!\$acc\s+end\s+atomic\b", "!$omp end atomic",
+                                    joined, count=1, flags=re.IGNORECASE)
+                    stats["end_atomic"] += 1
+                    return joined.splitlines(keepends=True)
                 stats[name + "_left_as_is"] += 1
                 return block
             joined = pat.sub(repl, joined, count=1)
@@ -694,6 +707,178 @@ def transform_define(line: str, stats: Counter, target: str) -> str:
     return head + body + ("\n" if line.endswith("\n") else "")
 
 
+#
+# A polymorphic dummy in a map, `map(to: this)` or a component of it,
+# `map(alloc: this%w)` with `this` a `class(T)` dummy, makes flang map the
+# dummy's own descriptor too: a 40-byte
+# entry at a STACK address in that frame. The matching `exit data` runs in
+# another frame (a release routine), on another descriptor, so the first is
+# never removed, and a later routine whose mapped local lands on that dead
+# address fails with "explicit extension not allowed" (seen in trc_linalg's
+# reserve, trc_basis_types and trc_eri: sym_orthog's `w` hit the one from
+# reserve). Under `select type (this); type is (T)` the name is not
+# polymorphic, flang maps the object itself, and no descriptor entry is made
+# (checked with LIBOMPTARGET_INFO=4, AFAR 24.4.0). `class default` keeps the
+# original directive, so an extended dynamic type is still mapped as before.
+#
+CLASS_DECL_RE = re.compile(r"^\s*class\s*\(\s*(\w+)\s*\)\s*(,[^:]*)?::\s*(.*)$", re.IGNORECASE)
+PROC_OPEN_RE = re.compile(r"^\s*(?:[\w(),\s]*\s)?(?:subroutine|function)\s+\w+", re.IGNORECASE)
+PROC_END_RE = re.compile(r"^\s*end\s*(?:subroutine|function)\b", re.IGNORECASE)
+OMP_MAP_DATA_RE = re.compile(r"^\s*!\$omp\s+target\s+(?:enter|exit)\s+data\b", re.IGNORECASE)
+
+
+#
+# One directive per mapped item. A map of several members makes the runtime
+# record one parent span from the lowest to the highest of them; when that
+# span covers a smaller one an earlier directive made, OpenMP refuses to
+# extend it ("explicit extension not allowed"). trc_eri maps this%pairs%...
+# early for the Schwarz bound, then this%pairs%..., this%dsh, this%bins and
+# this%quartets%... in one directive, whose span swallows the first. One item
+# per directive keeps each span to its member; a member inside an existing
+# span is just present. The source's order is kept (container before member
+# on the way in, as nvfortran already requires).
+#
+MAP_CLAUSE_RE = re.compile(r"map\s*\(\s*([a-z]+)\s*:\s*", re.IGNORECASE)
+
+
+def _split_items(s: str) -> list[str]:
+    """Split a map list at its top-level commas (`a(1:n, k)` stays whole)."""
+    parts, depth, cur = [], 0, ""
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+def _split_map_directive(block: list[str]) -> list[str] | None:
+    head = block[0]
+    ind = head[: len(head) - len(head.lstrip())]
+    text = ""
+    for k, l in enumerate(block):
+        body = l.strip()
+        if k > 0:
+            body = re.sub(r"^!\$omp&?\s*", "", body, flags=re.IGNORECASE)
+        body = body.rstrip("&").rstrip()
+        text += " " + body
+    m = re.match(r"\s*!\$omp\s+target\s+(enter|exit)\s+data\s+(.*)$", text, re.IGNORECASE)
+    if not m:
+        return None
+    kind, rest = m.group(1).lower(), m.group(2).strip()
+    items: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(rest):
+        if rest[pos].isspace() or rest[pos] == ",":
+            pos += 1
+            continue
+        mm = MAP_CLAUSE_RE.match(rest, pos)
+        if not mm:
+            return None  # another clause (if, depend, nowait): leave it whole
+        depth, j = 1, mm.end()
+        while j < len(rest) and depth:
+            depth += {"(": 1, ")": -1}.get(rest[j], 0)
+            j += 1
+        if depth:
+            return None
+        for it in _split_items(rest[mm.end():j - 1]):
+            if it.strip():
+                items.append((mm.group(1).lower(), it.strip()))
+        pos = j
+    if len(items) < 2:
+        return None
+    return [f"{ind}!$omp target {kind} data map({mt}: {it})\n" for mt, it in items]
+
+
+def split_multi_maps(lines: list[str]) -> tuple[list[str], int]:
+    out: list[str] = []
+    n = 0
+    i = 0
+    while i < len(lines):
+        if OMP_MAP_DATA_RE.match(lines[i]):
+            j = i
+            while lines[j].rstrip().endswith("&") and j + 1 < len(lines):
+                j += 1
+            new = _split_map_directive(lines[i:j + 1])
+            if new is not None:
+                out.extend(new)
+                n += 1
+                i = j + 1
+                continue
+        out.append(lines[i])
+        i += 1
+    return out, n
+
+
+def wrap_class_component_maps(lines: list[str]) -> tuple[list[str], int]:
+    out: list[str] = []
+    scopes: list[dict[str, str]] = []
+    # Open select blocks, innermost last: "type" or "case". Inside a select
+    # type the name is already the guard's (and may not be polymorphic any
+    # more), so nothing there is wrapped again.
+    selects: list[str] = []
+    n = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        code = line.split("!", 1)[0] if not line.lstrip().startswith("!") else ""
+        if re.match(r"^\s*(\w+\s*:\s*)?select\s+type\b", code, re.IGNORECASE):
+            selects.append("type")
+        elif re.match(r"^\s*(\w+\s*:\s*)?select\s+(case|rank)\b", code, re.IGNORECASE):
+            selects.append("case")
+        elif re.match(r"^\s*end\s*select\b", code, re.IGNORECASE) and selects:
+            selects.pop()
+        if PROC_END_RE.match(code):
+            if scopes:
+                scopes.pop()
+        elif PROC_OPEN_RE.match(code) and not re.match(r"^\s*end\b", code, re.IGNORECASE):
+            scopes.append({})
+        m = CLASS_DECL_RE.match(code)
+        if m and scopes and m.group(1).lower() != "*":
+            attrs = (m.group(2) or "").lower()
+            if "allocatable" not in attrs and "pointer" not in attrs:
+                for name in re.split(r"\s*,\s*", m.group(3).strip()):
+                    name = re.match(r"\w*", name).group(0)
+                    if name:
+                        scopes[-1][name.lower()] = m.group(1)
+        if OMP_MAP_DATA_RE.match(line) and scopes:
+            j = i
+            while lines[j].rstrip().endswith("&") and j + 1 < len(lines):
+                j += 1
+            block = lines[i:j + 1]
+            joined = "".join(block).lower()
+            known: dict[str, str] = {}
+            for sc in scopes:
+                known.update(sc)
+            # The object itself (`map(to: this)`, the parent-first maps) as
+            # well as its components: a whole-object map through the class
+            # descriptor leaves the same stale 40-byte entry.
+            hits = sorted({v for v in known if re.search(r"\b" + re.escape(v) + r"\b", joined)})
+            wrapped = "type" in selects
+            if len(hits) == 1 and not wrapped:
+                v = hits[0]
+                ind = line[: len(line) - len(line.lstrip())]
+                orig = re.search(r"\b(" + re.escape(v) + r")\b", "".join(block), re.IGNORECASE).group(1)
+                out.append(f"{ind}select type ({orig})\n")
+                out.append(f"{ind}type is ({known[v]})\n")
+                out.extend(block)
+                out.append(f"{ind}class default\n")
+                out.extend(block)
+                out.append(f"{ind}end select\n")
+                n += 1
+                i = j + 1
+                continue
+        out.append(line)
+        i += 1
+    return out, n
+
+
 def process_file(path: Path, write: bool, stats: Counter, warnings: list[str],
                  target: str = "gpu") -> int:
     text = path.read_text()
@@ -738,6 +923,15 @@ def process_file(path: Path, write: bool, stats: Counter, warnings: list[str],
     if n_dedup:
         stats["declare_target_deduped"] += n_dedup
         changed += n_dedup
+    if target == "gpu":
+        out, n_split = split_multi_maps(out)
+        if n_split:
+            stats["multi_map_split"] += n_split
+            changed += n_split
+        out, n_wrap = wrap_class_component_maps(out)
+        if n_wrap:
+            stats["class_map_wrapped"] += n_wrap
+            changed += n_wrap
     if changed == 0:
         return 0
     if write:
@@ -819,7 +1013,7 @@ def main() -> int:
 
     print()
     print("=== conversion counts ===")
-    order = ("atomic", "atomic_left_as_is",
+    order = ("multi_map_split", "class_map_wrapped", "atomic", "atomic_left_as_is", "end_atomic", "end_atomic_left_as_is",
              "define_atomic", "define_atomic_left_as_is",
              "enter_data", "exit_data", "data", "end_data", "update",
              "parallel_loop", "end_parallel_loop", "host_data", "end_host_data",

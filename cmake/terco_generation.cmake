@@ -116,6 +116,33 @@ function(terco_gen_uptodate out stamp_file stamp dest)
   set(${out} TRUE PARENT_SCOPE)
 endfunction()
 
+# The AMD GPU build compiles OpenMP-converted source (tools/dc_to_omp.py then
+# tools/acc_to_omp.py, --target gpu; tools/port_to_omp.sh makes the tree). A
+# generator run writes the ORIGINAL form: `do concurrent` and `!$acc`
+# directives. amdflang ignores `!$acc` and runs `do concurrent` on the host,
+# so an unconverted kernel does not fail to build -- it runs on the CPU over
+# host arrays and the device's copy of the result overwrites it: a Fock
+# matrix with no two-electron part, and an SCF that converges to a wrong
+# energy. So with TERCO_ENABLE_HIP the staging directory is converted before
+# it is synced, and the stamp covers both converters.
+function(terco_omp_convert stage)
+  # Fixed order: acc_to_omp.py's --translate-atomics is only legal after
+  # dc_to_omp.py has stripped `pure` from the procedures holding atomics.
+  foreach(_tc_tool dc_to_omp.py acc_to_omp.py)
+    set(_tc_extra)
+    if(_tc_tool STREQUAL "acc_to_omp.py")
+      set(_tc_extra --translate-atomics)
+    endif()
+    execute_process(
+      COMMAND ${Python3_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tools/${_tc_tool}"
+              --target gpu ${_tc_extra} --write "${stage}"
+      RESULT_VARIABLE _tc_rc OUTPUT_VARIABLE _tc_out ERROR_VARIABLE _tc_err)
+    if(NOT _tc_rc EQUAL 0)
+      message(FATAL_ERROR "terco: ${_tc_tool} failed on ${stage} (${_tc_rc}):\n${_tc_out}${_tc_err}")
+    endif()
+  endforeach()
+endfunction()
+
 # Plan, stamp, then run `gen_macro` (a macro of terco_gen calls) and sync
 # `stage` into `dest` -- or skip both. `stampable` OFF always runs (the
 # in-place src/generated refresh). The stamp is kept beside the stage, as
@@ -137,6 +164,13 @@ function(terco_generate name gen_macro stage dest prune stampable)
   foreach(_tg_c ${_tg_plan})
     string(APPEND _tg_sig "run ${_tg_c}\n")
   endforeach()
+  if(TERCO_ENABLE_HIP)
+    string(APPEND _tg_sig "omp-convert gpu\n")
+    foreach(_tg_s dc_to_omp.py acc_to_omp.py)
+      file(SHA256 "${PROJECT_SOURCE_DIR}/tools/${_tg_s}" _tg_h)
+      string(APPEND _tg_sig "script ${_tg_s} ${_tg_h}\n")
+    endforeach()
+  endif()
   string(SHA256 _tg_stamp "${_tg_sig}")
   string(SUBSTRING "${_tg_stamp}" 0 12 _tg_short)
   set(_tg_stamp_file "${stage}.stamp")
@@ -155,6 +189,9 @@ function(terco_generate name gen_macro stage dest prune stampable)
   file(MAKE_DIRECTORY "${stage}")
   set_property(GLOBAL PROPERTY TERCO_GEN_MODE "run")
   cmake_language(CALL ${gen_macro})
+  if(TERCO_ENABLE_HIP)
+    terco_omp_convert("${stage}")
+  endif()
   terco_sync_generated("${stage}" "${dest}" ${prune})
   if(stampable)
     terco_gen_write_stamp("${_tg_stamp_file}" "${_tg_stamp}" "${dest}")

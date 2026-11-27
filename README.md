@@ -119,7 +119,8 @@ before anything expensive is built.
 The **GPU** build requires **NVHPC**. `-stdpar=gpu` is the whole mechanism —
 it is what turns `do concurrent` into device kernels — so `TERCO_ENABLE_GPU=ON`
 with any other compiler is refused rather than silently producing a slow CPU
-library.
+library. AMD GPUs go through a generated OpenMP-offload copy of the source
+instead ([AMD GPUs](#amd-gpus-openmp-offload) below).
 
 A **host** build (`-DTERCO_ENABLE_GPU=OFF`) works with **gfortran 15 or
 newer**, ifx, or nvfortran. gfortran 15 is a floor rather than a preference:
@@ -154,6 +155,46 @@ ctest --test-dir build --output-on-failure
 | `TERCO_ENABLE_TESTING` | `ON` | |
 
 Consume it with `find_package(terco)` and link `terco::terco`.
+
+### AMD GPUs (OpenMP offload)
+
+AMD's flang has no `-stdpar=gpu` and ignores `!$acc`, so the AMD build compiles
+an OpenMP-offload copy of the tree that `tools/port_to_omp.sh` generates
+(`do concurrent` becomes `!$omp target teams distribute parallel do`, the
+OpenACC data directives become `!$omp target` ones). The copy is never edited:
+throw it away and regenerate it from a commit. hipBLAS and hipSOLVER stand in
+for cuBLAS and cuSOLVER (`src/core/trc_hip.F90`, plain `bind(c)`, no hipfort).
+
+Tested on Frontier (MI250X, `gfx90a`) with AMD's AFAR flang drop 24.4.0, which
+ships its own ROCm runtime: do not `module load rocm` beside it. Everything —
+BLAS included — must come from that drop; a BLAS built with another flang
+brings a second Fortran runtime, and `allocate` fails at start-up.
+
+```sh
+tools/port_to_omp.sh ../terco-omp gpu          # DEST must not exist
+cd ../terco-omp
+blas=$AFAR/lib/host-math/lib/librocm-openblas.so   # the drop's own OpenBLAS
+cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_Fortran_COMPILER=amdflang -DCMAKE_C_COMPILER=amdclang \
+  -DTERCO_ENABLE_HIP=ON -DTERCO_HIP_ARCH=gfx90a -DTERCO_HIP_NO_OPENMP_OPT=ON \
+  -DBLAS_LIBRARIES=$blas -DLAPACK_LIBRARIES=$blas \
+  -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,execstack -DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,execstack
+cmake --build build -j 120
+```
+
+| Option | Default | |
+|---|---|---|
+| `TERCO_ENABLE_HIP` | `OFF` | the AMD build; exclusive with `TERCO_ENABLE_GPU` |
+| `TERCO_HIP_ARCH` | `gfx90a` | `--offload-arch` |
+| `TERCO_HIP_NO_OPENMP_OPT` | `OFF` | skip LLVM's OpenMPOpt pass: most of the device compile time (a kernel's 22.7 s becomes 6.4 s); its run-time cost is not measured yet |
+| `TERCO_HIP_LTO_PARTITIONS` | `32` | device LTO codegen threads at link time; flang always links device code by full LTO, single-threaded otherwise |
+| `TERCO_HIP_USM` | `OFF` | unified shared memory (`gfx90a:xnack+`, run with `HSA_XNACK=1`): a fallback, about 2x slower in the Fock build |
+
+With these, a full build takes about 11 minutes at `-j 120`. On one MI250X GCD
+HF, the GGA/meta-GGA/hybrid/VV10 functionals, UHF/UKS, DF-HF, RI-MP2,
+RI-CCSD(T), TDDFT, C-PCM and the HF, B3LYP and DF gradients give the host
+build's energies to the digits printed. gly50/cc-pVDZ (3574 functions, full
+Fock builds) takes 5.7 s per Fock build against a V100's 3.9 s.
 
 ### fpm
 

@@ -117,3 +117,79 @@ def test_declare_targets_in_separate_procedures_kept(tmp_path):
     acc_to_omp.process_file(p, True, Counter(), [], "gpu")
     out = p.read_text()
     assert out.count("!$omp declare target") == 2
+
+
+def test_update_host_and_self_become_from():
+    # `update host(x)` is OpenACC's synonym for `update self(x)`; OpenMP has
+    # only from(), and amdflang rejects a leftover host().
+    for clause in ("host", "self"):
+        out = _xform(f"      !$acc update {clause}(ctr)\n", "gpu")
+        assert "!$omp target update from(ctr)" in out
+
+
+def _xform_atomics(line, translate):
+    old = acc_to_omp.TRANSLATE_ATOMICS
+    acc_to_omp.TRANSLATE_ATOMICS = translate
+    try:
+        return _xform(line, "gpu")
+    finally:
+        acc_to_omp.TRANSLATE_ATOMICS = old
+
+
+def test_end_atomic_translated_with_the_opening_line():
+    # `atomic capture` is a block: translating only its opening line leaves
+    # an OpenMP atomic with no end.
+    assert "!$omp atomic capture" in _xform_atomics("      !$acc atomic capture\n", True)
+    assert "!$omp end atomic" in _xform_atomics("      !$acc end atomic\n", True)
+
+
+def test_end_atomic_left_alone_without_translate_atomics():
+    out = _xform_atomics("      !$acc end atomic\n", False)
+    assert "!$acc end atomic" in out and "!$omp" not in out
+
+
+_CLASS_SRC = """\
+module trc_demo
+contains
+   subroutine demo_grow(this, n)
+      class(demo_t), intent(inout) :: this
+      integer, intent(in) :: n
+      allocate (this%w(n))
+      !$omp target enter data map(to: this)
+      !$omp target enter data map(alloc: this%w, &
+      !$omp                   this%v)
+   end subroutine demo_grow
+   subroutine demo_plain(t)
+      type(demo_t), intent(inout) :: t
+      !$omp target enter data map(alloc: t%w)
+   end subroutine demo_plain
+end module trc_demo
+"""
+
+
+def test_class_dummy_maps_go_through_select_type():
+    # A map naming a class(T) dummy, whole or by component, maps the
+    # dummy's own stack descriptor under amdflang, and the release in
+    # another frame can never remove it ("explicit extension not allowed"
+    # later). `type is (T)` makes the name non-polymorphic; class default
+    # keeps the original directive for an extended type.
+    out, n = acc_to_omp.wrap_class_component_maps(_CLASS_SRC.splitlines(keepends=True))
+    text = "".join(out)
+    assert n == 2
+    assert text.count("select type (this)") == 2
+    assert text.count("type is (demo_t)") == 2
+    assert text.count("class default") == 2
+    # Each directive, continuation included, appears in both branches.
+    assert text.count("map(to: this)") == 2
+    assert text.count("!$omp                   this%v)") == 2
+    # A type(T) dummy has no descriptor of its own: left as written.
+    assert "select type (t)" not in text
+
+
+def test_class_dummy_wrap_is_idempotent():
+    # The build converts regenerated kernels again; a second pass must not
+    # wrap the wrapped directives.
+    once, _ = acc_to_omp.wrap_class_component_maps(_CLASS_SRC.splitlines(keepends=True))
+    twice, n = acc_to_omp.wrap_class_component_maps(once)
+    assert n == 0
+    assert twice == once

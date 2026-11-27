@@ -733,8 +733,13 @@ contains
       !! (all tiles) against 8 (a band of 9 of 14 groups) saved 0.20 s of K
       !! and lost 0.21 s of Gamma' to the smaller GEMMs.
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+      use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                         acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                          acc_property_free_memory
+#endif
 #endif
       integer, intent(in) :: no, nv, group_size, tile_slots
       integer, intent(out) :: ng, nslot
