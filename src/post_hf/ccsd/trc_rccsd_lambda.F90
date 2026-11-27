@@ -70,8 +70,8 @@ module trc_rccsd_lambda
       logical :: diis_host = .false.  !! force the DIIS history onto the host
       integer(int64) :: device_free_cap = 0_int64
       !! TEST HOOK, as trc_rccsd_options_t's: above 0, the free device memory every size check of the solve sees
-      type(trc_rccsd_ladder_options_t) :: ladder  !! form and batch sizes of the ladder on l2
-      type(trc_rccsd_lambda_options_t) :: inter   !! passed to the build of the intermediates
+      type(trc_rccsd_ladder_options_t) :: ladder = trc_rccsd_ladder_options_t()  !! form and batch sizes of the ladder on l2
+      type(trc_rccsd_lambda_options_t) :: inter = trc_rccsd_lambda_options_t()   !! passed to the build of the intermediates
       logical :: verbose = .false.  !! one line per iteration and the step tables
    end type trc_rccsd_lambda_solve_options_t
 
