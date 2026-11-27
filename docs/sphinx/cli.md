@@ -26,7 +26,7 @@ molecules and basis sets, and each one reproduced the output shown.
 |---|---|
 | `geometry` (positional) | molecule in xyz format, Angstrom (or a TOML input file) |
 | `-b, --basis` | basis set: a BSE JSON file, or a name in `$TERCO_BASIS_PATH` then the installed basis sets (`def2-svp`) |
-| `--ecp` | effective core potential, looked up like `--basis` |
+| `--ecp` | effective core potential, looked up like `--basis`; `--grad`, `--opt` and `--hessian` (finite differences of the analytic gradient) carry its derivative for HF, DFT and RI-MP2, for basis functions up to f (not g and higher), and an excited-state (TDDFT) gradient is refused |
 | `-c, --chrg` | molecular charge (default: a `.CHRG` file here, else 0) |
 | `-u, --uhf` | number of unpaired electrons (default: a `.UHF` file here, else 0 or 1 by electron count) |
 | `--cart` | Cartesian AOs even when the basis is defined spherical |

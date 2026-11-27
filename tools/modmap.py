@@ -43,6 +43,9 @@ RE_TYPE = re.compile(r"^\s*type\s*(?:,[^:]*)?::\s*(\w+)", re.I)
 RE_TYPE_ALT = re.compile(r"^\s*type\s+(?!is\b|\()(\w+)\s*$", re.I)
 RE_END_TYPE = re.compile(r"^\s*end\s+type\b", re.I)
 RE_IFACE = re.compile(r"^\s*(abstract\s+)?interface\s+(\w+)\s*$", re.I)
+# A plain (or abstract) interface block: its bodies declare external
+# procedures -- C bindings, LAPACK -- not this module's own.
+RE_IFACE_BARE = re.compile(r"^\s*(abstract\s+)?interface\s*$", re.I)
 RE_BOUND = re.compile(
     r"^\s*(?:procedure|generic)\s*(?:,[^:]*)?::\s*(\w+)\s*(?:=>\s*(\w+))?", re.I)
 RE_PUBLIC = re.compile(r"^\s*public\s*(?:::)?\s*(.*)$", re.I)
@@ -188,6 +191,9 @@ def parse_file(path):
         m = RE_IFACE.match(st)
         if m:
             cur.ifaces.add(m.group(2).lower())
+            depth_iface += 1
+            continue
+        if RE_IFACE_BARE.match(st):
             depth_iface += 1
             continue
         if re.match(r"^\s*end\s+interface\b", st, re.I):

@@ -90,8 +90,13 @@ module trc_scf_grad_df
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+   use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                      acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
+#endif
 #endif
    implicit none
    private

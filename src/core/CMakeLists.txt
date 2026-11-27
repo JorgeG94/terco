@@ -6,6 +6,7 @@ target_sources(
           trc_ecp_quadrature.F90 # ECP radial quadrature and scaled spherical Bessel function
           trc_basis_types.F90 # trc_basis_t and trc_pairlist_t: the basis and the screened pair list
           trc_device_binding.F90 # one GPU per rank: trc_bind_device and friends
+          trc_hip.F90        # hipBLAS/hipSOLVER C interfaces (empty unless TERCO_HIP)
           trc_linalg.F90     # dense linear algebra on device-resident matrices
           trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX

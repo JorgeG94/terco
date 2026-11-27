@@ -13,6 +13,8 @@ target_sources(
           trc_integrals.F90   # the 1e, multipole, PCM and DF integral drivers
           trc_ecp_angular.F90  # ECP angular factors (type 1 and type 2)
           trc_ecp_radial.F90   # ECP radial factors (type 1 and type 2)
+          trc_ecp_grad_types.F90  # the ECP gradient's data
+          trc_ecp_gbra.F90      # the ECP gradient's kernels for a g derivative bra
           trc_ecp.F90           # the scalar ECP one-electron matrix
           trc_mdj.F90        # the McMurchie-Davidson J engine (no quartets)
           trc_mdg.F90        # MD exchange for the g classes above TERCO_RYS_G_LTOT
