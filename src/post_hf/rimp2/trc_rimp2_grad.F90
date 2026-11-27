@@ -99,6 +99,8 @@ module trc_rimp2_grad
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t, trc_fock_options_t, eri_lmax_refusal
+   use trc_ecp, only: trc_ecp_gradient
+   use trc_ecp_types, only: trc_ecp_t
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_mo_to_cart
@@ -133,14 +135,18 @@ module trc_rimp2_grad
    !! preconditioner finite.
 
    integer, parameter :: ST_ORB = 1, ST_CORR = 2, ST_ZVEC = 3, ST_DENSITY = 4, ST_GRAD4C = 5, ST_GRAD1E = 6, &
-                         ST_XC = 7, ST_KSGRID = 8, NSTEP = 8
+                         ST_XC = 7, ST_KSGRID = 8, ST_ECP = 9, NSTEP = 9
    character(len=20), parameter :: STEP_NAME(NSTEP) = [character(len=20) :: &
                                    "orbitals, pairs, ERI", "correlation (fitted)", "Z-vector (CPHF)", &
                                    "relaxed densities", "2e gradient", "1e gradient", "XC (KS reference)", &
-                                   "KS grid (rebuilt)"]
+                                   "KS grid (rebuilt)", "ECP gradient"]
 
    type :: trc_rimp2_grad_options_t
-      !! The RI-MP2 gradient's knobs. Plain values only.
+      !! The RI-MP2 gradient's knobs. Plain values only, but for `ecp`.
+      type(trc_ecp_t) :: ecp
+      !! The reference's effective core potential (`has_ecp` false: none). Its
+      !! derivative is contracted with D + P, the relaxed density every other
+      !! one-electron term takes.
       integer :: nocc = 0
       !! Doubly occupied orbitals of the reference.
       integer :: nfrozen = 0
@@ -305,6 +311,7 @@ contains
       type(timer_type) :: tc, tall
       character(len=:), allocatable :: why
       logical :: fitted
+      type(error_t) :: eerr
 
       if (.not. present(la)) then
          block
@@ -408,7 +415,19 @@ contains
          call tbl%step_off(la, ST_XC, tc)
       end if
       !$acc update self(job%grad)
+      ! The ECP term adds into the host `grad` just fetched, with the relaxed
+      ! D + P that `w%dhf` holds, still mapped.
+      if (job%opts%ecp%has_ecp) then
+         call tbl%step_on(la, ST_ECP, tc)
+         call trc_ecp_gradient(b, job%opts%ecp, w%dhf, job%grad, eerr)
+         call tbl%step_off(la, ST_ECP, tc)
+      end if
       !$acc exit data delete(job%grad, w%ccart, w%pao, w%wao, w%dhf)
+      if (eerr%has_error()) then
+         job%res%message = "trc_rimp2_gradient: "//eerr%get_message()
+         call release_all(pl, eri, fitted, w)
+         return
+      end if
       call scf_grad_nuclear_repulsion(b, job%grad)
       job%grad = job%grad + w%scale*relax%grad
       call release_all(pl, eri, fitted, w)

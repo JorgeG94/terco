@@ -87,8 +87,13 @@ module trc_scf_df
    use trc_device_memory, only: device_memory_free_bytes
    use, intrinsic :: iso_fortran_env, only: output_unit
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+   use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                      acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
    use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                       acc_property_free_memory
+#endif
 #endif
    implicit none
    private

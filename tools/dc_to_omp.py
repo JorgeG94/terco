@@ -138,7 +138,7 @@ class Header:
     indent: str
     indices: list[tuple[str, str, str, str | None]]  # (var, lo, hi, step)
     privates: list[str]
-    has_mask: bool
+    mask: str | None = None
 
 
 def parse_triplet(item: str) -> tuple[str, str, str, str | None] | None:
@@ -204,13 +204,13 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
         trailing = rest[end + 1:].strip()
 
         indices: list[tuple[str, str, str, str | None]] = []
-        has_mask = False
+        masks: list[str] = []
         for it in split_top_level(inside, ","):
             t = parse_triplet(it)
             if t is not None:
                 indices.append(t)
             elif it.strip():
-                has_mask = True
+                masks.append(it.strip())
 
         privates: list[str] = []
         t = trailing
@@ -243,12 +243,17 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
             else:
                 t = after
 
-        # A masked or index-less header is left as written, and the scan goes
-        # on past it: returning None here would end transform_lines for the
-        # whole file, leaving every later loop unconverted too.
-        if has_mask:
+        # A mask is the scalar logical expression after the triplets; the
+        # standard allows one. Anything else that is not a triplet is left
+        # as written, and the scan goes on past it: returning None here would
+        # end transform_lines for the whole file, leaving every later loop
+        # unconverted too. A skipped loop is not harmless: amdflang runs an
+        # unconverted `do concurrent` on the host, over host copies of
+        # device-resident arrays.
+        if len(masks) > 1:
             sys.stderr.write(
-                f"  skip: header has mask at line {first + 1}; manual handling needed\n"
+                f"  skip: header has {len(masks)} non-index items at line {first + 1}; "
+                "manual handling needed\n"
             )
             i = last + 1
             continue
@@ -257,7 +262,8 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
             continue
 
         indent = lines[first][: len(lines[first]) - len(lines[first].lstrip())]
-        return (Header(indent=indent, indices=indices, privates=privates, has_mask=False),
+        return (Header(indent=indent, indices=indices, privates=privates,
+                       mask=masks[0] if masks else None),
                 first, last)
     return None
 
@@ -303,8 +309,62 @@ def emit_replacement(h: Header, target: str = "gpu") -> tuple[list[str], list[st
         rng = f"{lo}, {hi}" + (f", {step}" if step else "")
         do_lines.append(f"{h.indent}do {var} = {rng}")
     end_lines = [f"{h.indent}end do" for _ in h.indices]
+    # The mask filters iterations of the whole index space, so it is the
+    # innermost loop's guard: the loops stay perfectly nested for collapse.
+    if h.mask is not None:
+        do_lines.append(f"{h.indent}if ({h.mask}) then")
+        end_lines.insert(0, f"{h.indent}end if")
     end_lines.append(f"{h.indent}!$omp end {kw}")
     return ([directive] + do_lines, end_lines)
+
+
+#
+# Derived-type components in a GPU loop body go through an `associate`.
+# `this%dpk(i)` inside a target region makes the runtime map `this` itself,
+# implicitly: a copy of the struct whose descriptors were never attached to
+# the device arrays mapped member by member, so the kernel follows a null
+# base address (trc_scf_df's df_jk_build, memory access fault at (nil)).
+# Bound to an associate name, the kernel sees a plain array, found present by
+# its data address, and a scalar component is passed from the host instead
+# of read from a stale device copy of the struct.
+#
+COMP_REF_RE = re.compile(r"\b([a-z_]\w*)((?:\s*%\s*[a-z_]\w*)+)", re.IGNORECASE)
+NOT_COMPONENTS = {"re", "im", "kind", "len"}
+
+
+def associate_components(body: list[str], tag: int,
+                         privates: tuple[str, ...] = ()) -> tuple[list[str], list[str]]:
+    """Rewrite `a%b%c` in `body` to associate names. Returns the new body
+    and the `name => designator` pairs (empty when there is nothing to do)."""
+    names: dict[str, str] = {}
+    private_lc = {p.strip().lower() for p in privates}
+    new_body = []
+    for raw in body:
+        if raw.lstrip().startswith(("!", "#")):
+            new_body.append(raw)
+            continue
+        code = code_part(raw)
+        tail = raw[len(code):]
+
+        def sub(m: re.Match) -> str:
+            comps = [c.strip() for c in m.group(2).split("%")[1:]]
+            if any(c.lower() in NOT_COMPONENTS for c in comps):
+                return m.group(0)
+            # A per-iteration (local) struct is not the loop's to bind once.
+            if m.group(1).lower() in private_lc:
+                return m.group(0)
+            desig = m.group(1) + "%" + "%".join(comps)
+            key = desig.lower()
+            if key not in names:
+                names[key] = (f"trc_a{tag}_{len(names) + 1}_", desig)
+            return names[key][0]
+
+        # Only outside string literals: code_part blanks nothing, so split
+        # on quotes and rewrite the unquoted pieces.
+        parts = re.split(r"(\"[^\"]*\"|'[^']*')", code)
+        code = "".join(p if p[:1] in "\"'" else COMP_REF_RE.sub(sub, p) for p in parts)
+        new_body.append(code + tail)
+    return new_body, [f"{a} => {d}" for a, d in names.values()]
 
 
 def transform_lines(lines: list[str], target: str = "gpu") -> tuple[list[str], int]:
@@ -323,9 +383,15 @@ def transform_lines(lines: list[str], target: str = "gpu") -> tuple[list[str], i
             i = last + 1
             continue
         new_header, new_footer = emit_replacement(h, target)
-        out = (out[:first] + new_header + out[last + 1:end_idx] + new_footer + out[end_idx + 1:])
+        body = out[last + 1:end_idx]
+        if target == "gpu":
+            body, assoc = associate_components(body, changed + 1, tuple(h.privates))
+            if assoc:
+                new_header = [f"{h.indent}associate ({', '.join(assoc)})"] + new_header
+                new_footer = new_footer + [f"{h.indent}end associate"]
+        out = (out[:first] + new_header + body + new_footer + out[end_idx + 1:])
         changed += 1
-        i = first + len(new_header) + (end_idx - last - 1) + len(new_footer)
+        i = first + len(new_header) + len(body) + len(new_footer)
     return (out, changed)
 
 

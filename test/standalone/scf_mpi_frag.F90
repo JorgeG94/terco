@@ -64,7 +64,11 @@ program scf_mpi_frag
    ! `mpi` module would give, and the only way to build on every backend --
    ! some MPIs (Cray MPICH under nvfortran) offer no mpi_f08 module at all.
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+   use trc_hip, only: acc_get_device_num => hip_get_device_num, acc_device_nvidia
+#else
    use openacc, only: acc_get_device_num, acc_device_nvidia
+#endif
 #endif
    implicit none
 

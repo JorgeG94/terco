@@ -1023,8 +1023,13 @@ contains
       !! (cache residency, at setup) and trc_xc_fxc_vec_chunk (vector scratch,
       !! at apply time, when the resident tiles are already counted out).
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+      use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                         acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                          acc_property_free_memory
+#endif
       bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                    acc_property_free_memory), int64)
 #else
