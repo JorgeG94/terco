@@ -608,8 +608,13 @@ contains
       !! Device bytes free for kept blocks of unpacked B, half a gigabyte
       !! held back for the libraries. The host build keeps up to 2 GB.
 #ifdef TRC_DEVICE
+#ifdef TERCO_HIP
+      use trc_hip, only: acc_get_property => hip_get_property, acc_get_device_num => hip_get_device_num, &
+                         acc_get_device_type => hip_get_device_type, acc_property_free_memory
+#else
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                          acc_property_free_memory
+#endif
       bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                    acc_property_free_memory), int64) - 512_int64*1024*1024
 #else

@@ -352,6 +352,11 @@ add_subdirectory(cmake)
 # configuration a host code built with another compiler needs.
 #
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# CMake 3.28 defines no PIC flag for the LLVMFlang compiler id (amdflang), so
+# the property above silently adds nothing and libterco.so fails to link.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "LLVMFlang" AND NOT CMAKE_Fortran_COMPILE_OPTIONS_PIC)
+  set(CMAKE_Fortran_COMPILE_OPTIONS_PIC -fPIC)
+endif()
 
 set(PIC_ENABLE_TESTING
     OFF
@@ -455,6 +460,88 @@ if(TERCO_ENABLE_GPU)
   else()
     target_link_options(${main_lib} PUBLIC -cudalib=cublas,cusolver)
   endif()
+endif()
+
+#
+# The AMD GPU build: the OpenMP-offload port of the source (tools/port_to_omp.sh
+# runs tools/dc_to_omp.py then tools/acc_to_omp.py, `--target gpu`) compiled by
+# amdflang, with hipBLAS and hipSOLVER in place of cuBLAS and cuSOLVER
+# (src/core/trc_hip.F90 declares them as C interfaces, so hipfort is not
+# needed). Exclusive with TERCO_ENABLE_GPU. The flags are PUBLIC so terco's
+# tests and the CLI, which carry converted directives too, get them; pic and
+# the other fetched dependencies do not link terco and are left alone.
+#
+option(TERCO_ENABLE_HIP "AMD GPU build: OpenMP offload plus hipBLAS/hipSOLVER" OFF)
+set(TERCO_HIP_ARCH "gfx90a" CACHE STRING "AMD GPU architecture for --offload-arch (gfx90a: MI250X)")
+if(TERCO_ENABLE_HIP)
+  if(TERCO_ENABLE_GPU)
+    message(FATAL_ERROR "TERCO_ENABLE_HIP and TERCO_ENABLE_GPU are exclusive: "
+                        "the first is the AMD build, the second the NVHPC one.")
+  endif()
+  find_library(TERCO_HIPBLAS_LIBRARY hipblas
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  find_library(TERCO_HIPSOLVER_LIBRARY hipsolver
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  # hipDeviceSynchronize (trc_linalg's sync) lives in the HIP runtime, which
+  # neither hipBLAS nor -fopenmp pulls in for a static libterco.
+  find_library(TERCO_HIPRT_LIBRARY amdhip64
+               HINTS $ENV{ROCM_PATH} /opt/rocm PATH_SUFFIXES lib REQUIRED)
+  # TRC_DEVICE too: it selects the device algorithms (the `do concurrent`
+  # scatters with atomics, the device memory budgets) over the serial host
+  # loops, which would run on the host over device-mapped arrays. TERCO_HIP
+  # then picks the HIP/OpenMP runtime over the NVHPC one wherever the two
+  # differ (trc_linalg, trc_hip).
+  target_compile_definitions(${main_lib} PUBLIC TERCO_HIP TRC_DEVICE)
+  # Unified shared memory: the map clauses become no-ops and the GPU reads
+  # host memory through XNACK page migration (run with HSA_XNACK=1). With
+  # separate memory, amdflang's maps of terco's derived types collide
+  # ("explicit extension not allowed": a member map's parent span grows over
+  # an earlier one), and mapping the parent first leaves the scalars set
+  # after it stale on the device, silently. A correctness build until the
+  # maps are restructured; the first touch of each page migrates it.
+  #
+  # The -fatomic-* flags are not optional under USM. flang tags every atomic
+  # `!amdgpu.no.fine.grained.memory !amdgpu.no.remote.memory` by default,
+  # so the backend emits the hardware FP64 add, which on MI250X does nothing
+  # to host (fine-grained) memory: a 10^6-update atomic sum came back 0, and
+  # water/6-31G* converged to -233.45 Eh with a negative two-electron energy.
+  # With them the add is a CAS loop and the sum is exact.
+  option(TERCO_HIP_USM "AMD build: unified shared memory (gfx90a:xnack+, -fopenmp-force-usm)" OFF)
+  set(_terco_hip_offload --offload-arch=${TERCO_HIP_ARCH})
+  if(TERCO_HIP_USM)
+    set(_terco_hip_offload --offload-arch=${TERCO_HIP_ARCH}:xnack+ -fopenmp-force-usm
+                           -fatomic-fine-grained-memory -fatomic-remote-memory)
+  endif()
+  target_compile_options(
+    ${main_lib}
+    PUBLIC "$<$<COMPILE_LANGUAGE:Fortran>:-fopenmp;${_terco_hip_offload}>")
+  target_link_options(${main_lib} PUBLIC -fopenmp ${_terco_hip_offload})
+  # LLVM's OpenMPOpt pass is most of amdflang's device compile time on the
+  # generated kernels: trc_pc_k2111 takes 22.7 s, 15.5 s of it in
+  # OpenMPOptCGSCCPass + OpenMPOptPass (-ftime-report); 6.4 s with the pass
+  # off, while -O2, -openmp-opt-disable-spmdization/-deglobalization and the
+  # -fopenmp-assume-* flags change nothing. The converted loops are all
+  # combined `target teams distribute parallel do` (SPMD already), where the
+  # pass has the least to do. The link option reaches the device LTO through
+  # clang-linker-wrapper's --device-linker, which runs the pass again.
+  # amdflang always links device code by full LTO: every kernel of every
+  # object is merged, optimised and code-generated for the GPU in ONE ld.lld
+  # thread (measured: 99.8% CPU on a 120-core node while libterco links).
+  # flang has no -fno-offload-lto. Partitions split the codegen half across
+  # threads after the merged module is optimised, so inlining and the numbers
+  # do not change. 0 leaves lld's default (one partition).
+  set(TERCO_HIP_LTO_PARTITIONS "32" CACHE STRING "AMD build: device LTO codegen partitions (0: lld default)")
+  if(TERCO_HIP_LTO_PARTITIONS GREATER 0)
+    target_link_options(${main_lib} PUBLIC "SHELL:-Xoffload-linker --lto-partitions=${TERCO_HIP_LTO_PARTITIONS}")
+  endif()
+  option(TERCO_HIP_NO_OPENMP_OPT "AMD build: skip LLVM's OpenMPOpt (much faster device compile and link)" OFF)
+  if(TERCO_HIP_NO_OPENMP_OPT)
+    target_compile_options(${main_lib} PUBLIC "$<$<COMPILE_LANGUAGE:Fortran>:SHELL:-mllvm -openmp-opt-disable>")
+    target_link_options(${main_lib} PUBLIC "SHELL:-mllvm -openmp-opt-disable")
+  endif()
+  target_link_libraries(${main_lib} PUBLIC ${TERCO_HIPBLAS_LIBRARY}
+                                           ${TERCO_HIPSOLVER_LIBRARY}
+                                           ${TERCO_HIPRT_LIBRARY})
 endif()
 
 # This is a genius, Claude hack:
