@@ -19,13 +19,15 @@ module check_tddft_api_suite
    !!     is the exact derivative: it matches a Richardson finite difference of
    !!     E_SCF + omega over one atom's coordinates, the grid and SCF rebuilt at
    !!     every displacement, while the Pulay-only one misses it;
+   !!     (argument `fd_sph`: the same finite difference over a SPHERICAL basis, water PBE/cc-pVDZ, which the run
+   !!     folds to Cartesian orbitals; the energies and gradients against pyscf are check_tddft_sph);
    !!  4. (argument `rpa_route`) the RPA matvec's two Fock batches, folded and symmetric for Ts and folded and
    !!     antisymmetric for Ta, against the same products formed through the enumerated `fock_nosym_many` on the
    !!     split densities: Hartree-Fock (both products), B3LYP (A-B, which has no xc term, so the whole product), PBE
    !!     (A-B is the diagonal, with and without `force_antisym`, which must also leave A+B alone);
    !!  5. what is refused before any work: triplets, meta-GGA, range-separated,
-   !!     VV10 and double-hybrid functionals, a spherical basis, an unknown
-   !!     functional, a root outside 1..nroots, --df and a continuum solvent.
+   !!     VV10 and double-hybrid functionals, an f basis, an unknown
+   !!     functional, a root outside 1..nroots, the --df gradient and a continuum solvent.
    !! Run from test/. A test-drive suite.
    !!
    use pic_types, only: dp, int64
@@ -43,7 +45,7 @@ module check_tddft_api_suite
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
                             trc_tddft_run_gradient, trc_tddft_run_refusal, trc_tddft_run_gap_note
    use trc_test_basis, only: read_xyz
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector, ref_read_matrix3
    implicit none
    private
@@ -53,6 +55,8 @@ module check_tddft_api_suite
    !! "grad_tda" and "grad_rpa" run one gradient check each, "fd" only the grid response finite difference (it
    !! rebuilds four SCFs); empty, the energies and the refusals. Separate runs of one program keep each around ten
    !! seconds (or, for "fd", LONG).
+   logical :: use_sph = .false.
+   !! The finite difference runs over the spherical cc-pVDZ basis instead of Cartesian 6-31G (mode `fd_sph`).
 
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
@@ -67,9 +71,14 @@ module check_tddft_api_suite
    !! same quartets in a different order (1e-14 in check_fock_split).
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
    !! The gradient checks' gate against pyscf (check_tddft_grad).
+   integer, parameter :: CART_NLINDEP = 7
+   !! Functions dropped for the O2- d-aug-cc-pVDZ set at lindep_thresh 0.2 in the Cartesian basis (host-measured).
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
-   real(dp), parameter :: FD_GATE = 2.0e-7_dp
-   !! Kohn-Sham finite difference with the grid response (check_tddft_grad's FD_ABSTOL_DFT).
+   real(dp), parameter :: FD_GATE = 1.0e-8_dp
+   !! Kohn-Sham finite difference with the grid response. Host-measured misses of the exact gradient: 1.4e-12
+   !! (Cartesian) and 3.0e-12 (spherical); the Richardson difference of four SCFs carries about 1e-12 per step on
+   !! the device, so 1e-8 keeps three orders over the measurement and sits 500x below the Pulay-only miss
+   !! (5.2e-6 and 7.2e-6) that the test must tell apart.
 
    type :: fixture_t
       !! One SCF of water, with what the TDDFT entry needs.
@@ -88,6 +97,9 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == "fd") then
          testsuite = [new_unittest("grid response is the default and is the exact derivative", test_grid_response)]
+      else if (trim(mode_arg) == "fd_sph") then
+         use_sph = .true.
+         testsuite = [new_unittest("spherical basis: the gradient is the exact derivative", test_grid_response)]
       else if (trim(mode_arg) == "missed_root") then
          testsuite = [ &
                      new_unittest("missed-root budget: TDA of formaldehyde/6-31+G HF", test_missed_root_tda), &
@@ -114,7 +126,11 @@ contains
          testsuite = [ &
                      new_unittest("TDA energies vs pyscf (water PBE/6-31G*)", test_energies_tda), &
                      new_unittest("RPA energies and ||Y||^2 vs pyscf (water PBE/6-31G*)", test_energies_rpa), &
-                     new_unittest("refusals before any work", test_refusals) &
+                     new_unittest("refusals before any work", test_refusals), &
+                     new_unittest("an SCF with functions dropped for linear dependence is refused", test_lindep_refused), &
+                     new_unittest("the same in a Cartesian basis", test_lindep_refused_cart), &
+                     new_unittest("an unrestricted or non-square reference is refused with its own message", &
+                                  test_reference_shape_refused) &
                      ]
       end if
    end subroutine collect_check_tddft_api
@@ -135,11 +151,15 @@ contains
       else
          call read_xyz("water.xyz", fx%natm, fx%zint, at_r)
       end if
-      call trc_basis_from_json(bas_json, fx%natm, fx%zint, at_r, fx%bas, err, force_cart=.true.)
+      if (use_sph) then
+         call trc_basis_from_json("basis_sets/cc-pvdz.json", fx%natm, fx%zint, at_r, fx%bas, err)
+      else
+         call trc_basis_from_json(bas_json, fx%natm, fx%zint, at_r, fx%bas, err, force_cart=.true.)
+      end if
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) return
       call fx%bas%to_device()
-      call fx%la%init(fx%bas%nao)
+      call fx%la%init(merge(fx%bas%nao_sph, fx%bas%nao, fx%bas%spherical))
       fx%ready = .true.
       fx%nocc = nint(sum(real(fx%zint, dp)))/2
       fx%sopts%conv_energy = 1.0e-12_dp
@@ -790,11 +810,15 @@ contains
       allocate (fx%zint(size(at_r, 2)))
       fx%zint = [8, 1, 1]
       fx%natm = size(at_r, 2)
-      call trc_basis_from_json("basis_sets/6-31g.json", fx%natm, fx%zint, at_r, fx%bas, err, force_cart=.true.)
+      if (use_sph) then
+         call trc_basis_from_json("basis_sets/cc-pvdz.json", fx%natm, fx%zint, at_r, fx%bas, err)
+      else
+         call trc_basis_from_json("basis_sets/6-31g.json", fx%natm, fx%zint, at_r, fx%bas, err, force_cart=.true.)
+      end if
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) return
       call fx%bas%to_device()
-      call fx%la%init(fx%bas%nao)
+      call fx%la%init(merge(fx%bas%nao_sph, fx%bas%nao, fx%bas%spherical))
       fx%ready = .true.
       fx%nocc = 5
       fx%sopts%conv_energy = 1.0e-12_dp
@@ -822,7 +846,8 @@ contains
       type(trc_tddft_run_result_t) :: res, res_pulay
       real(dp), allocatable :: rp(:, :)
       real(dp) :: ep, em, coarse, fd, diff, exact_miss, pulay_miss
-      integer, parameter :: ROOT = 2, ATOM = 1, DIR = 3
+      integer, parameter :: ROOT = 2
+      integer :: iat, idir, loc(2)
 
       call fixture_build(fx, "basis_sets/6-31g.json", "pbe", error)
       if (allocated(error)) then
@@ -850,6 +875,12 @@ contains
       end if
       if (.not. allocated(error)) then
          diff = maxval(abs(res%grad - res_pulay%grad))
+         ! The coordinate to differentiate is where the grid response is largest, so the finite difference tells
+         ! the exact gradient from the Pulay-only one by the widest margin: the two analytic gradients differ by
+         ! the Pulay-only gradient's own miss there (the exact one matches the finite difference to FD_GATE).
+         loc = maxloc(abs(res%grad - res_pulay%grad))
+         idir = loc(1)
+         iat = loc(2)
          call global_logger%info("tddft api: grid response moves the gradient by "//to_string(diff, "es10.2")// &
                                  " (max over atoms and components)")
          call check(error, diff > 1.0e-6_dp .and. diff < 1.0e-3_dp, "the grid response should move the water PBE "// &
@@ -858,27 +889,28 @@ contains
       if (.not. allocated(error)) then
          ! Richardson (4 D(h/2) - D(h))/3 of the central difference of E_SCF + omega, one coordinate.
          rp = fx%bas%at_r
-         rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) + FD_STEP
+         rp(idir, iat) = fx%bas%at_r(idir, iat) + FD_STEP
          call excited_energy(rp, ROOT, ep, error)
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) - FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) - FD_STEP
             call excited_energy(rp, ROOT, em, error)
          end if
          coarse = (ep - em)/(2.0_dp*FD_STEP)
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) + 0.5_dp*FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) + 0.5_dp*FD_STEP
             call excited_energy(rp, ROOT, ep, error)
          end if
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) - 0.5_dp*FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) - 0.5_dp*FD_STEP
             call excited_energy(rp, ROOT, em, error)
          end if
          fd = (4.0_dp*(ep - em)/FD_STEP - coarse)/3.0_dp
       end if
       if (.not. allocated(error)) then
-         exact_miss = abs(res%grad(DIR, ATOM) - fd)
-         pulay_miss = abs(res_pulay%grad(DIR, ATOM) - fd)
-         call global_logger%info("tddft api: d(E_SCF + omega_2)/dz(O) finite difference "//to_string(fd, "f14.10")// &
+         exact_miss = abs(res%grad(idir, iat) - fd)
+         pulay_miss = abs(res_pulay%grad(idir, iat) - fd)
+         call global_logger%info("tddft api: d(E_SCF + omega_2)/dx_"//to_string(idir)//"(atom "//to_string(iat)// &
+                                 ") finite difference "//to_string(fd, "f14.10")// &
                                  "; grid response misses by "//to_string(exact_miss, "es10.2")// &
                                  ", Pulay only by "//to_string(pulay_miss, "es10.2"))
          call check(error, exact_miss < FD_GATE, "the default gradient vs finite difference, "// &
@@ -891,18 +923,115 @@ contains
       call fixture_release(fx)
    end subroutine test_grid_response
 
-   subroutine expect_refusal(error, opts, sopts, word)
-      !! The run is refused, and the message contains `word`.
+   subroutine expect_refusal(error, opts, sopts, word, gradient)
+      !! The run (or, with `gradient`, its gradient) is refused, and the message contains `word`.
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_run_options_t), intent(in) :: opts
       type(trc_scf_options_t), intent(in) :: sopts
       character(len=*), intent(in) :: word
+      logical, intent(in), optional :: gradient
       character(len=256) :: msg
-      msg = trc_tddft_run_refusal(sopts, opts)
+      msg = trc_tddft_run_refusal(sopts, opts, gradient=gradient)
       call check(error, len_trim(msg) > 0, word//" must be refused")
       if (allocated(error)) return
       call check(error, index(msg, word) > 0, "the message for '"//word//"' says: "//trim(msg))
    end subroutine expect_refusal
+
+   subroutine test_lindep_refused(error)
+      !! The spherical basis (d-aug-cc-pVDZ as shipped).
+      type(error_type), allocatable, intent(out) :: error
+      call lindep_refused(error, .false.)
+   end subroutine test_lindep_refused
+
+   subroutine test_lindep_refused_cart(error)
+      !! The same set as Cartesian functions, the path the response took before spherical bases.
+      type(error_type), allocatable, intent(out) :: error
+      call lindep_refused(error, .true.)
+   end subroutine test_lindep_refused_cart
+
+   subroutine lindep_refused(error, cart)
+      !! O2- in the d-aug-cc-pVDZ set (check_scf_lindep_gap's case, 5 functions dropped at a 0.2 threshold in the
+      !! spherical basis): the run has no tested path for the null states, so it refuses with the reason rather than
+      !! using them as virtuals.
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: cart
+      type(trc_basis_t) :: bas
+      type(trc_linalg_t) :: la
+      type(trc_scf_options_t) :: sopts
+      type(trc_scf_result_t) :: scf
+      type(trc_tddft_run_options_t) :: opts
+      type(trc_tddft_run_result_t) :: res
+      type(error_t) :: err
+      integer :: z(1), dev
+      real(dp) :: r(3, 1)
+
+      dev = trc_bind_device(0)
+      z = 8
+      r = 0.0_dp
+      call trc_basis_from_json("basis_sets/d-aug-cc-pvdz.json", 1, z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.), force_cart=cart)
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      call bas%to_device()
+      call la%init(merge(bas%nao_sph, bas%nao, bas%spherical))
+      sopts%lindep_thresh = 0.2_dp
+      sopts%conv_energy = 1.0e-12_dp
+      sopts%conv_density = 1.0e-10_dp
+      sopts%conv_diis = 1.0e-9_dp
+      sopts%max_iteration = 100
+      call trc_scf_run(bas, 5, 5, sopts, scf)
+      call global_logger%info("lindep refusal: n_lindep "//to_string(scf%n_lindep)//merge(" (Cartesian)", " (spherical)", cart))
+      call check(error, scf%converged .and. scf%n_lindep == merge(CART_NLINDEP, 5, cart), &
+                 "the SCF must converge with "//to_string(merge(CART_NLINDEP, 5, cart))//" functions dropped")
+      if (.not. allocated(error)) then
+         opts%nroots = 1
+         call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
+         call check(error, res%err%has_error() .and. index(res%err%get_message(), "linear dependence") > 0 .and. &
+                    .not. res%converged, "a linearly dependent reference must be refused: "//res%err%get_message())
+      end if
+      call la%release()
+      call bas%release()
+   end subroutine lindep_refused
+
+   subroutine test_reference_shape_refused(error)
+      !! run_reference_refusal runs before any work on the reference, so hand-made SCF results are enough: an
+      !! unrestricted one (nspin = 2), and a restricted one whose orbitals are one column short of square in the
+      !! basis, each with its own message.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_linalg_t) :: la
+      type(trc_scf_options_t) :: sopts
+      type(trc_scf_result_t) :: scf
+      type(trc_tddft_run_options_t) :: opts
+      type(trc_tddft_run_result_t) :: res
+      type(error_t) :: err
+      integer :: z(3), dev, nsp
+      real(dp) :: r(3, 3)
+
+      dev = trc_bind_device(0)
+      z = [8, 1, 1]
+      r = reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.4_dp, 1.1_dp, 0.0_dp, -1.4_dp, 1.1_dp], [3, 3])
+      call trc_basis_from_json("basis_sets/6-31g.json", 3, z, r, bas, err, force_cart=.true.)
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      call bas%to_device()
+      call la%init(bas%nao)
+      nsp = bas%nao
+      sopts%functional = "pbe"
+      scf%nspin = 2
+      call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
+      call check(error, res%err%has_error() .and. index(res%err%get_message(), "restricted reference") > 0 .and. &
+                 index(res%err%get_message(), "not square") == 0, "an unrestricted reference: "//res%err%get_message())
+      if (.not. allocated(error)) then
+         scf%nspin = 1
+         allocate (scf%cmo(nsp, nsp - 1, 1))
+         call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
+         call check(error, res%err%has_error() .and. index(res%err%get_message(), "not square") > 0 .and. &
+                    index(res%err%get_message(), "linear dependence") == 0, "non-square orbitals: "//res%err%get_message())
+      end if
+      call la%release()
+      call bas%release()
+   end subroutine test_reference_shape_refused
 
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error
@@ -949,22 +1078,37 @@ contains
       call expect_refusal(error, opts, sopts, "nosuchfunc")
       if (allocated(error)) return
       sopts%functional = "pbe"
+      ! A fitted reference is solved (check_tddft_df); only its gradient is refused.
       sopts%df = .true.
-      call expect_refusal(error, opts, sopts, "density-fitted")
+      call check(error, len_trim(trc_tddft_run_refusal(sopts, opts)) == 0, "the energies over --df must be accepted")
+      if (allocated(error)) return
+      call expect_refusal(error, opts, sopts, "density-fitted", gradient=.true.)
+      if (allocated(error)) return
+      call expect_refusal(error, opts, sopts, "not implemented yet", gradient=.true.)
       if (allocated(error)) return
       sopts%df = .false.
       sopts%pcm_model = "cpcm"
       call expect_refusal(error, opts, sopts, "continuum")
       if (allocated(error)) return
       sopts%pcm_model = ""
-      ! A spherical basis: the check sees it on the basis.
+      ! A spherical d basis is accepted (the orbitals are folded to Cartesian by the run); a spherical f basis
+      ! is refused on its highest l alone, like the Cartesian one.
       call read_xyz("water.xyz", natm, zint, at_r)
+      call trc_basis_from_json("basis_sets/cc-pvdz.json", natm, zint, at_r, bas, err)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      call check(error, bas%spherical, "cc-pvdz must load spherical")
+      msg = trc_tddft_run_refusal(sopts, opts, bas)
+      call bas%release()
+      if (allocated(error)) return
+      call check(error, len_trim(msg) == 0, "a spherical d basis must be accepted, got: "//trim(msg))
+      if (allocated(error)) return
       call trc_basis_from_json("basis_sets/cc-pvtz.json", natm, zint, at_r, bas, err)
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) return
       msg = trc_tddft_run_refusal(sopts, opts, bas)
       call bas%release()
-      call check(error, index(msg, "spherical") > 0, "a spherical basis must be refused, got: "//trim(msg))
+      call check(error, index(msg, "l = 3") > 0, "a spherical f basis must be refused, got: "//trim(msg))
       if (allocated(error)) return
       ! An f basis in Cartesian functions is refused up front too (the solver's own l = 3 refusal comes after
       ! the SCF): the basis alone decides, before any work.

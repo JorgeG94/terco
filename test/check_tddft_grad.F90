@@ -391,9 +391,9 @@ contains
    end subroutine test_refusals
 
    subroutine refuse_spherical(error)
-      !! A spherical basis (cc-pVDZ loads spherical) is refused, whatever the
-      !! reference: orbitals and amplitudes of the Cartesian size are faked so
-      !! that the basis is the only thing wrong.
+      !! Orbitals left in the spherical space (cc-pVDZ loads spherical, nao_sph < nao
+      !! rows) are refused: the gradient takes Cartesian AO coefficients, which
+      !! trc_tddft_run folds from a spherical SCF.
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: sph
       type(trc_pairlist_t) :: spl
@@ -412,7 +412,8 @@ contains
       if (allocated(error)) return
       call check(error, sph%spherical, "cc-pvdz must load spherical")
       if (allocated(error)) return
-      n = sph%nao
+      ! Orbitals still in the spherical space (nao_sph rows): the gradient wants them folded to Cartesian.
+      n = sph%nao_sph
       allocate (cmo(n, n), eps(n), dmat(n, n))
       cmo = 0.0_dp
       do i = 1, n
@@ -426,8 +427,8 @@ contains
       td%xamp = 0.0_dp
       td%omega = 1.0_dp
       call trc_tddft_gradient_rks(sph, spl, seri, fx%la, r, td, o)
-      call check(error, o%err%has_error() .and. index(o%err%get_message(), "spherical") > 0 .and. &
-                 .not. allocated(o%grad), "a spherical basis must be refused: "//o%err%get_message())
+      call check(error, o%err%has_error() .and. index(o%err%get_message(), "Cartesian basis") > 0 .and. &
+                 .not. allocated(o%grad), "spherical-space orbitals must be refused: "//o%err%get_message())
       call sph%release()
    end subroutine refuse_spherical
 

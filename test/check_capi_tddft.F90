@@ -17,8 +17,16 @@ module check_capi_tddft_suite
    !!     roots and the gradient is RI-MP2's; an effective core potential (HI/def2-SVP) refuses the excited-state
    !!     gradient as the ground-state one does; TDDFT after trc_load_scf (no grid in the loaded result) gives the roots
    !!     of the SCF that was saved.
+   !!  6. a SPHERICAL basis (water HF/cc-pVDZ, no trc_set_force_cartesian): trc_check_tddft accepts it, and the TDA and
+   !!     RPA gradients of a root match pyscf with mol.cart = False (tddft_sph_grad_water_cc-pvdz_hf.ref,
+   !!     tddft_sph_rpa_grad_water_cc-pvdz_hf.ref).
+   !!  7. a --df reference (trc_set_df, water cc-pVDZ PBE, spherical orbital and auxiliary bases): trc_check_tddft
+   !!     accepts it for the energies and refuses the gradient ("not implemented yet", TRC_ERR_UNSUPPORTED), trc_run_tddft
+   !!     solves it over the fit the SCF kept and matches the fitted pyscf anchor (tddft_df_water_ccpvdz_sph_pbe.ref), and
+   !!     trc_run_gradient after it is refused, not the four-centre gradient of another energy.
    !! Run from test/. A test-drive suite. The argument `pbe` runs only the water PBE gradient (2.), the rest only without
-   !! it: two runs of one program, each around ten seconds.
+   !! it: two runs of one program, the first around 25 s on a host build
+   !! (the spherical case adds about 10 s), the second around ten.
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char, c_null_ptr
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
@@ -27,15 +35,16 @@ module check_capi_tddft_suite
    use pic_logger, only: global_logger, info_level
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_test_basis, only: read_xyz
-   use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix3
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector, ref_read_matrix3
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
                                trc_set_convergence, trc_set_force_cartesian, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
                                trc_set_tddft_missed_root_iterations, trc_set_tddft_density_screen, trc_check_tddft, trc_run_tddft, &
                                trc_tddft_nroots, trc_tddft_window_open, &
-                               trc_tddft_energies, &
+                               trc_tddft_energies, trc_timing, trc_timing_count, TRC_TIMING_NAME_MAX, &
                                trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
-                               trc_set_aux_json, trc_set_rimp2, trc_run_rimp2, trc_save_scf, trc_load_scf, &
+                               trc_set_aux_json, trc_set_jkfit_json, trc_set_df, trc_set_rimp2, trc_run_rimp2, &
+                               trc_save_scf, trc_load_scf, &
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ERR_NULL, TRC_ABI_MINOR
    implicit none
    private
@@ -56,6 +65,8 @@ contains
       end if
       testsuite = [ &
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
+                  new_unittest("spherical basis: TDA and RPA gradients of a root vs pyscf", test_spherical), &
+                  new_unittest("--df: the energies match the fitted pyscf anchor, the gradient is refused", test_df), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
                   new_unittest("refusals", test_refusals), &
                   new_unittest("missed-root iterations: 0 is the default, 24 reaches the solver", &
@@ -83,18 +94,23 @@ contains
       end do
    end function message_of
 
-   subroutine open_handle(error, handle, functional, basis, ok, xyz)
-      !! A water (or `xyz`) handle with the basis, the method and the SCF settings of the pyscf references.
+   subroutine open_handle(error, handle, functional, basis, ok, xyz, spherical)
+      !! A water (or `xyz`) handle with the basis (Cartesian functions unless `spherical`), the method and the SCF
+      !! settings of the pyscf references.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr), intent(out) :: handle
       character(len=*), intent(in) :: functional, basis
       logical, intent(out) :: ok
       character(len=*), intent(in), optional :: xyz
+      logical, intent(in), optional :: spherical
       integer :: natm
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       integer(c_int) :: rc
+      logical :: cart
 
+      cart = .true.
+      if (present(spherical)) cart = .not. spherical
       if (present(xyz)) then
          call read_xyz(xyz, natm, zint, at_r)
       else
@@ -103,9 +119,9 @@ contains
       rc = trc_create(handle)
       if (rc == TRC_OK) rc = trc_set_molecule(handle, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
                                               0_c_int, 1_c_int)
-      if (rc == TRC_OK) rc = trc_set_force_cartesian(handle, 1_c_int)
+      if (rc == TRC_OK .and. cart) rc = trc_set_force_cartesian(handle, 1_c_int)
       if (rc == TRC_OK) rc = trc_set_basis_json(handle, basis//c_null_char)
-      if (rc == TRC_OK) rc = trc_set_method(handle, functional//c_null_char, 3_c_int)
+      if (rc == TRC_OK) rc = trc_set_method(handle, functional//c_null_char, 3_c_int)  ! grid level 3: the anchors' grid
       if (rc == TRC_OK) rc = trc_set_convergence(handle, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
       ok = rc == TRC_OK
       call check(error, ok, "setting up the handle failed, status "//to_string(int(rc)))
@@ -136,19 +152,26 @@ contains
       gref = all_roots(:, :, root)
    end subroutine ref_gradient
 
-   subroutine hf_root(error, ref_name, tda, root)
-      !! Hartree-Fock water/6-31G, three roots, TDA or RPA: the gradient of `root` against the reference.
+   subroutine hf_root(error, ref_name, tda, root, basis, spherical)
+      !! Hartree-Fock water (6-31G, or `basis` with `spherical` functions), three roots, TDA or RPA: the gradient of
+      !! `root` against the reference.
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: ref_name
       logical, intent(in) :: tda
       integer, intent(in) :: root
+      character(len=*), intent(in), optional :: basis
+      logical, intent(in), optional :: spherical
       type(c_ptr) :: handle
       real(c_double) :: grad(9), omega(3), osc(3), ynorm(3), dipole(9), e_total, e_scf, weight(3)
       real(dp) :: gref(3, 3), e_ref
       integer(c_int) :: rc, nroots, hole(3), particle(3)
       logical :: ok
 
-      call open_handle(error, handle, "", "basis_sets/6-31g.json", ok)
+      if (present(basis)) then
+         call open_handle(error, handle, "", basis, ok, spherical=spherical)
+      else
+         call open_handle(error, handle, "", "basis_sets/6-31g.json", ok)
+      end if
       if (allocated(error)) return
       rc = trc_set_tddft(handle, 3_c_int, merge(1_c_int, 0_c_int, tda), 1_c_int, int(root, c_int), 1_c_int)
       if (rc == TRC_OK) rc = trc_set_tddft_convergence(handle, 1.0e-10_c_double, 0_c_int, 1.0e-11_c_double, 0_c_int, 0_c_int)
@@ -195,6 +218,136 @@ contains
       if (allocated(error)) return
       call hf_root(error, "tddft_rpa_grad_water_6-31g_hf.ref", .false., 3)
    end subroutine test_hf
+
+   subroutine test_spherical(error)
+      !! The same through a spherical basis: nothing is set to force Cartesian functions.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      integer(c_int) :: rc
+      logical :: ok
+
+      call open_handle(error, handle, "", "basis_sets/cc-pvdz.json", ok, spherical=.true.)
+      if (allocated(error)) return
+      rc = trc_check_tddft(handle, 1_c_int)
+      call check(error, rc == TRC_OK, "trc_check_tddft must accept a spherical basis: "//message_of(handle))
+      rc = trc_destroy(handle)
+      if (allocated(error)) return
+      call hf_root(error, "tddft_sph_grad_water_cc-pvdz_hf.ref", .true., 2, "basis_sets/cc-pvdz.json", .true.)
+      if (allocated(error)) return
+      call hf_root(error, "tddft_sph_rpa_grad_water_cc-pvdz_hf.ref", .false., 3, "basis_sets/cc-pvdz.json", .true.)
+   end subroutine test_spherical
+
+   subroutine test_df(error)
+      !! Water PBE/cc-pVDZ with trc_set_df: the fitted TDA roots against pyscf, and the gradient refused.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      real(c_double) :: omega(3), osc(3), ynorm(3), dipole(9), grad(9)
+      real(dp) :: om_ref(3), osc_ref(3), e_ref
+      integer(c_int) :: rc
+      integer :: u
+      logical :: ok
+
+      call open_handle(error, handle, "pbe", "basis_sets/cc-pvdz.json", ok, spherical=.true.)
+      if (allocated(error)) return
+      rc = trc_set_jkfit_json(handle, "basis_sets/def2-universal-jkfit.json"//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_df(handle, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft(handle, 3_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft_convergence(handle, 1.0e-10_c_double, 0_c_int, 1.0e-11_c_double, 0_c_int, 0_c_int)
+      call check(error, rc == TRC_OK, "setting up --df TDDFT: "//message_of(handle))
+      if (allocated(error)) return
+      rc = trc_check_tddft(handle, 0_c_int)
+      call check(error, rc == TRC_OK, "trc_check_tddft must accept --df for the energies: "//message_of(handle))
+      if (.not. allocated(error)) then
+         rc = trc_check_tddft(handle, 1_c_int)
+         call check(error, rc == TRC_ERR_UNSUPPORTED .and. index(message_of(handle), "not implemented yet") > 0, &
+                    "trc_check_tddft must refuse the --df gradient: "//message_of(handle))
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_run_scf(handle)
+         call check(error, rc == TRC_OK, "the --df SCF failed: "//message_of(handle))
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_run_tddft(handle)
+         call check(error, rc == TRC_OK, "trc_run_tddft over --df: "//message_of(handle))
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_tddft_energies(handle, 3_c_int, omega, osc, ynorm, dipole)
+         call check(error, rc == TRC_OK, "reading the roots failed")
+      end if
+      if (.not. allocated(error)) then
+         call ref_require("tddft_df_water_ccpvdz_sph_pbe.ref", u)
+         call ref_read_real(u, "E_SCF", e_ref)
+         call ref_read_vector(u, "OMEGA", 3, om_ref)
+         call ref_read_vector(u, "OSC", 3, osc_ref)
+         call ref_close(u)
+         call check(error, maxval(abs(omega - om_ref)) < 1.0e-6_dp, "fitted omega vs pyscf, "// &
+                    to_string(maxval(abs(omega - om_ref)), "es10.2"))
+         if (.not. allocated(error)) call check(error, maxval(abs(osc - osc_ref)) < 1.0e-5_dp, "fitted f vs pyscf, "// &
+                                                to_string(maxval(abs(osc - osc_ref)), "es10.2"))
+      end if
+      if (.not. allocated(error)) then
+         call check_df_timings(error, handle)
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_run_gradient(handle)
+         call check(error, rc == TRC_ERR_UNSUPPORTED .and. index(message_of(handle), "not implemented yet") > 0, &
+                    "the --df excited-state gradient must be refused: "//message_of(handle))
+      end if
+      if (.not. allocated(error)) then
+         ! Setting the fitting basis again drops the fit but keeps the converged SCF: a state error, not an
+         ! unsupported option.
+         rc = trc_set_jkfit_json(handle, "basis_sets/def2-universal-jkfit.json"//c_null_char)
+         if (rc == TRC_OK) rc = trc_run_tddft(handle)
+         call check(error, rc == TRC_ERR_STATE .and. index(message_of(handle), "fit of the SCF is gone") > 0, &
+                    "trc_run_tddft after the fit was dropped must be a state error: "//message_of(handle))
+      end if
+      rc = trc_destroy(handle)
+   end subroutine test_df
+
+   subroutine check_df_timings(error, handle)
+      !! After a --df solve trc_timing lists the step table of the excitation solve, under the names the
+      !! regression bench (bench/regression/cases.toml, tddft_df_rpa) judges on, each a non-negative time.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr), intent(in) :: handle
+      character(len=*), parameter :: WANTED(6) = [character(len=32) :: "tddft.total", "tddft.step.exchange_ij_ab", &
+                                                  "tddft.step.exchange_ib_ja", "tddft.step.xc_kernel", &
+                                                  "tddft.step.davidson_host", "tddft.step.mo_blocks_setup"]
+      character(kind=c_char) :: buf(TRC_TIMING_NAME_MAX)
+      character(len=TRC_TIMING_NAME_MAX) :: nm
+      real(c_double) :: v
+      integer(c_int) :: n, rc
+      integer :: i, k, w
+      logical :: found(size(WANTED))
+      real(dp) :: total
+
+      found = .false.
+      total = -1.0_dp
+      rc = trc_timing_count(handle, n)
+      call check(error, rc == TRC_OK, "trc_timing_count after the --df solve")
+      if (allocated(error)) return
+      do i = 0, n - 1
+         rc = trc_timing(handle, int(i, c_int), buf, TRC_TIMING_NAME_MAX, v)
+         if (rc /= TRC_OK) cycle
+         nm = ""
+         do k = 1, TRC_TIMING_NAME_MAX
+            if (buf(k) == c_null_char) exit
+            nm(k:k) = buf(k)
+         end do
+         do w = 1, size(WANTED)
+            if (trim(nm) == trim(WANTED(w))) then
+               found(w) = .true.
+               call check(error, v >= 0.0_c_double, trim(nm)//" is negative")
+               if (allocated(error)) return
+               if (w == 1) total = v
+            end if
+         end do
+      end do
+      do w = 1, size(WANTED)
+         call check(error, found(w), "trc_timing does not list "//trim(WANTED(w))//" after a --df TDDFT solve")
+         if (allocated(error)) return
+      end do
+      call check(error, total > 0.0_dp, "tddft.total is not positive")
+   end subroutine check_df_timings
 
    subroutine test_pbe(error)
       type(error_type), allocatable, intent(out) :: error

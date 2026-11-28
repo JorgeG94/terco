@@ -83,9 +83,10 @@ rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1, 0.0d0)   ! last: omega, 0 = Cou
 
 Closed-shell singlet TDA/CIS and RPA (TDHF, Casida) excitation energies, and the
 gradient of one root, are in the C ABI since version 1.30, on the converged
-restricted reference of the handle (Cartesian basis; LDA, GGA and global-hybrid
-functionals). The Fortran entry is `trc_tddft_run_solve` and
-`trc_tddft_run_gradient` (module `trc_tddft_run`).
+restricted reference of the handle (Cartesian or spherical basis, the latter
+since ABI 1.35, over a `--df` fit since ABI 1.36, energies only; LDA, GGA and global-hybrid functionals). The Fortran entry is `trc_tddft_run_solve` and
+`trc_tddft_run_gradient` (module `trc_tddft_run`); over a `--df` reference it is
+`trc_tddft_run_solve_fitted`, which takes the `df_jk_t` the SCF converged with.
 
 | Call | What it does |
 |---|---|
@@ -93,7 +94,7 @@ functionals). The Fortran entry is `trc_tddft_run_solve` and
 | `trc_set_tddft_convergence(h, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep)` | the solver and Z-vector settings; each 0 resets that setting to its default (1e-8, 50, 1e-9, 100, 2) |
 | `trc_set_tddft_missed_root_iterations(h, n)` | the iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated (0, the default since ABI 1.33, 24 before: none is iterated, so fewer matvecs, and the candidates are reported open (`trc_tddft_window_open`); 24 recovers a root the guesses miss, and is what to set before differentiating a followed root with `trc_run_gradient` or `trc_opt_set_tddft` (the CLI does for `--grad`/`--opt`); negative is `TRC_ERR_BADARG`; ABI 1.31) |
 | `trc_set_tddft_density_screen(h, on)` | whether the excited-state matvec screens its integrals by the trial densities (non-zero, the default) or not (zero: the same roots to the integral threshold, a slower run, logged as a warning; the gradient's Z-vector never screens this way; ABI 1.32) |
-| `trc_check_tddft(h, gradient)` | whether the run would be refused for the settings alone (a triplet, an open shell, meta-GGA, range-separated, VV10 or double-hybrid functional, a spherical basis, `--df`, PCM), before any SCF |
+| `trc_check_tddft(h, gradient)` | whether the run would be refused for the settings alone (a triplet, an open shell, meta-GGA, range-separated, VV10 or double-hybrid functional, an f basis, PCM, or with `gradient` a `--df` reference), before any SCF |
 | `trc_run_tddft(h)` | the roots, after `trc_run_scf` |
 | `trc_tddft_nroots(h, &n)`, `trc_tddft_energies(h, n, omega, f, ynorm, dipole)`, `trc_tddft_character(h, n, hole, particle, weight)` (`n` the roots the arrays hold; fewer than solved is `TRC_ERR_BADARG`), `trc_tddft_target_root(h, &root, &nroots)` | the roots: energies in Eh, oscillator strengths, \|\|Y\|\|^2, transition dipoles, and each root's dominant orbital pair (from the HOMO and the LUMO) |
 | `trc_tddft_window_open(h, &n)` | the candidate Ritz pairs the missed-root check of the last run left open (0: none; they do not by themselves mean a root is missing; `TRC_ERR_STATE` without a stored result; ABI 1.33) |

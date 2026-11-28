@@ -141,23 +141,23 @@ contains
          end if
       end if
       if (r%hessian) call run_die(r, "--tddft has no Hessian: it cannot be combined with --hessian or --opt-freq")
-      if (r%df) call run_die(r, "--tddft is not implemented over a --df (density-fitted) reference")
       if (len(r%pcm) > 0) call run_die(r, "--tddft has no solvent response: it cannot be combined with --pcm")
       if (r%nranks > 1) call run_die(r, "--tddft runs on one rank (the response path is not rank-split)")
       ! The library's own list, from the functional and the options alone: meta-GGA, range-separated hybrids, VV10,
       ! double hybrids, an unknown functional, a root out of range.
       sopts%functional = r%func
+      sopts%df = r%df
       opts%nroots = r%tddft_nroots
       opts%target_root = r%tddft_root
-      reason = trc_tddft_run_refusal(sopts, opts)
+      ! The energies run over a fit; the gradient (--grad, --opt) does not yet.
+      reason = trc_tddft_run_refusal(sopts, opts, gradient=r%grad .or. r%opt)
       if (len_trim(reason) > 0) call run_die(r, trim(reason))
    end subroutine refuse_combinations
 
    module subroutine run_tddft_parse(r)
       !! Reads `--tddft` and the `--tddft-*` options. Every combination the method does not cover is refused here,
       !! before the SCF, with the library's own message where it has one: a triplet, an unrestricted reference, a
-      !! meta-GGA, range-separated or VV10 functional, --df, --pcm. (A spherical basis is only known once the basis
-      !! has loaded: `trc_check_tddft` refuses it, still before the SCF.)
+      !! meta-GGA, range-separated or VV10 functional, --pcm, and --df with --grad or --opt.
       type(run_t), intent(inout) :: r
       logical :: any_option
 

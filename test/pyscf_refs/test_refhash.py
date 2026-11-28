@@ -63,7 +63,8 @@ class RestaleTests(unittest.TestCase):
         # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one /
         # _gen_tddft_one / _gen_tddft_grad_one / _gen_tddft_rpa_grad_one by gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks / gen_tddft /
-        # gen_rpa / gen_tddft_grad / gen_tddft_rpa_grad, and by gen_tddft_s1_min directly. Update
+        # gen_rpa / gen_tddft_grad / gen_tddft_rpa_grad, and by gen_tddft_s1_min and gen_tddft_sph (the
+        # six tddft_sph_* cases) and gen_tddft_df (the twelve tddft_df_* cases) directly. Update
         # this set when a new generator starts calling it.
         src = edit_once(SOURCE, "conv_tol_grad=1.0e-8, max_cycle=200,",
                         "conv_tol_grad=1.0e-8, max_cycle=201,")
@@ -77,7 +78,14 @@ class RestaleTests(unittest.TestCase):
                           "sym_d2h_subgroup", "sym_tops", "rccsd_ints",
                           "h_rhf_water_min", "h_rhf_water_min_cart", "h_uhf_hco_min", "h_lda_water_min",
                           "h_pbe_n2_min", "h_b3lyp_hco_min", "h_r2scan_water_min", "h_rhf_water_prims",
-                          "h_rhf_n2_prims", "h_pbe_water_prims", "h_rhf_water_cc5z", "h_wb97x_water_min"})
+                          "h_rhf_n2_prims", "h_pbe_water_prims", "h_rhf_water_cc5z", "h_wb97x_water_min",
+                          "tddft_sph_water_hf", "tddft_sph_water_pbe", "tddft_sph_water_b3lyp",
+                          "tddft_sph_formamide_hf", "tddft_sph_formamide_pbe", "tddft_sph_formamide_b3lyp",
+                          "tddft_df_water_cart_hf", "tddft_df_water_cart_pbe", "tddft_df_water_cart_b3lyp",
+                          "tddft_df_water_sph_hf", "tddft_df_water_sph_pbe", "tddft_df_water_sph_b3lyp",
+                          "tddft_df_formamide_cart_hf", "tddft_df_formamide_cart_pbe",
+                          "tddft_df_formamide_cart_b3lyp", "tddft_df_formamide_sph_hf",
+                          "tddft_df_formamide_sph_pbe", "tddft_df_formamide_sph_b3lyp"})
 
     def test_case_arguments_restale_only_that_case(self):
         src = edit_once(SOURCE, '"basis_sets/cc-pvdz.json", 1e-9),',

@@ -216,3 +216,17 @@ stages = ["gradient.total", "scf.setup", "scf.wall", "total_wall"]
 # "ecp" case's to judge.
 judge = ["gradient.total"]
 # Measured on a V100 (one run): 15 s, the gradient 3.5 s of it.
+
+# --- density-fitted excited states ---------------------------------------------
+
+[[case]]
+name = "tddft_df_rpa"
+description = "water x20, PBE0 / def2-SVP, --df, RPA (TDDFT) excitation energies of 5 roots: the fitted J, K1 and K2 products and the XC kernel, 480 functions"
+geometry = "systems/water20.xyz"
+args = ["-b", "def2-svp", "-f", "pbe0", "--df", "--tddft", "--tddft-roots", "5", "--tddft-tol", "1e-5",
+        "--tddft-approx", "rpa"]
+stages = ["tddft.step.exchange_ij_ab", "tddft.step.exchange_ib_ja", "tddft.step.xc_kernel",
+          "tddft.step.davidson_host", "tddft.step.mo_blocks_setup", "tddft.total", "scf.wall", "total_wall"]
+# tddft.total is the sum of the steps: INFO, the steps localise. The two exchange steps are batched GEMMs
+# (6 TFLOP/s of the V100's ~7), the xc kernel is the grid response, davidson_host the subspace algebra.
+judge = ["tddft.step.exchange_ij_ab", "tddft.step.exchange_ib_ja", "tddft.step.xc_kernel", "tddft.step.davidson_host"]

@@ -1,0 +1,17 @@
+# terco pyscf reference v1
+# case: tddft_df formamide/cc-pvdz/sph/hf (rpa singlets, density-fitted)
+# generator: test/pyscf_refs/generate.py CASES["tddft_df_formamide_sph_hf"] -> gen_tddft_df
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: f666edcd36bc5f42f529cc92b240b4e9592ea692e82ae3c9f27b2dcd2268a7ea
+# files: test/check_tddft_df.F90 test/basis_sets/cc-pvdz.json test/basis_sets/def2-universal-jkfit.json test/formamide.xyz
+E_SCF -1.68948152750317178e+02
+OMEGA 3
+2.37787567312035458e-01 3.21414308712992092e-01 3.32033904802737589e-01
+OSC 3
+1.70825119372022328e-03 1.26381003694911540e-02 2.07965502320889450e-01
+YY 3
+6.45436053241840377e-03 1.60542623674313949e-03 8.45998063084926581e-03
+CONV_TOL 9.99999999999999999e-15
+GRAD_NORM 1.67165447472040887e-13
+END

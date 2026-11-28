@@ -234,7 +234,8 @@ module trc_capi
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
-                            trc_tddft_run_gradient, trc_tddft_run_refusal
+                            trc_tddft_run_solve_fitted, trc_tddft_run_gradient, trc_tddft_run_refusal, &
+                            trc_tddft_run_request_t, trc_tddft_run_solve_fitted_grid
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect
@@ -379,7 +380,13 @@ module trc_capi
    !! What trc_run_gradient says for an excited-state gradient over an ECP: the
    !! root's density has no U_ECP contraction yet.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 34
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 36
+   !! 1.36: trc_run_tddft and trc_check_tddft accept a --df (density-fitted) reference, solved over the
+   !! fit its SCF converged with; the TDDFT trc_run_gradient over --df is refused (not implemented yet), and
+   !! trc_run_tddft after the fit was dropped (trc_set_jkfit_*) returns TRC_ERR_STATE.
+   !! No signature change.
+   !! 1.35: trc_run_tddft, trc_check_tddft and the TDDFT trc_run_gradient accept a
+   !! spherical orbital basis (refused before). No signature change.
    !! 1.34: trc_run_gradient accepts --df with a spherical orbital and auxiliary
    !! basis (refused before). No signature change.
    !! 1.33: trc_tddft_window_open, a new entry point (the number of candidate Ritz
@@ -4201,11 +4208,11 @@ contains
       ! independent reservation -- its size tracks how much is free when it
       ! fires, which is exactly why paying it HERE, first, matters: every
       ! allocation after it (`cx%dfjk%setup`'s B, and its own free-memory-
-      ! aware block sizing in `choose_setup_block`/`choose_qb`) then sees the
+      ! aware block sizing in `scf_df_choose_setup_block`/`choose_qb`) then sees the
       ! device's true remaining budget instead of one this cost is about to
       ! shrink out from under it. Measured consequence at w40 cc-pVDZ --df
       ! (1000 functions, naux 10640, B alone ~19.8 GiB): with the fit BEFORE
-      ! the guess (the old order), `choose_setup_block` sized its (mu nu|P)
+      ! the guess (the old order), `scf_df_choose_setup_block` sized its (mu nu|P)
       ! scratch against free memory that had not yet paid this cost, and the
       ! run died with CUDA_ERROR_OUT_OF_MEMORY inside that scratch's own
       ! allocation; with the fit AFTER (this order), the same run converges
@@ -6257,9 +6264,7 @@ contains
       character(len=*), intent(in) :: who
       character(len=:), allocatable :: refusal
       refusal = ""
-      if (cx%bb%b%spherical) then
-         refusal = who//": a spherical basis is not implemented (set force_cartesian before loading the basis)"
-      else if (.not. reference_is_aufbau(cx)) then
+      if (.not. reference_is_aufbau(cx)) then
          refusal = who//": the response needs an aufbau reference (this SCF holds a non-aufbau occupation)"
       else if (cx%rimp2_ok) then
          refusal = who//": RI-MP2/double-hybrid excited states are not implemented"
@@ -6269,7 +6274,7 @@ contains
          refusal = who//": the response path is not rank-split; run it on a single rank"
       else if (cx%res%n_lindep > 0) then
          refusal = who//": canonical orthogonalisation dropped "//to_string(cx%res%n_lindep)// &
-                   " functions (trc_set_lindep); the response needs (nao, nao) orbitals"
+                   " functions (trc_set_lindep); the response needs orbitals that are square in the basis"
       end if
    end function tddft_context_refusal
 
@@ -6286,9 +6291,11 @@ contains
       !! settings, answered from the settings alone, before any SCF runs:
       !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
       !! would give -- a triplet, an unrestricted reference, a meta-GGA,
-      !! range-separated, VV10 or double-hybrid functional, a spherical basis,
-      !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
-      !! result held. A geometry optimiser asks this before its first step.
+      !! range-separated, VV10 or double-hybrid functional, an f basis,
+      !! a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+      !! result held, and with `gradient` a --df reference (the excited-state gradient over a
+      !! fit is not implemented yet; the energies are, ABI 1.36). A geometry optimiser asks this
+      !! before its first step.
       !! What only a finished SCF knows (functions dropped by canonical
       !! orthogonalisation) is not, and cannot be, checked here.
       type(c_ptr), value :: handle
@@ -6308,7 +6315,7 @@ contains
          return
       end if
       status = TRC_ERR_UNSUPPORTED
-      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b)
+      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b, gradient=gradient /= 0_c_int)
       if (len_trim(reason) > 0) then
          cx%message = trim(reason)
          return
@@ -6344,22 +6351,27 @@ contains
       !! method). Builds its own pair list and ERI engine at the context's
       !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
       !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
-      !! trc_tddft_character, trc_tddft_energy.
+      !! trc_tddft_character, trc_tddft_energy. (ABI 1.35: a spherical orbital
+      !! basis was refused before. ABI 1.36: a --df reference was refused before; it
+      !! is now solved over the fit the SCF converged with, and the pair
+      !! list is the transition dipoles' alone.)
       !!
       !! After it, trc_run_gradient is the gradient of the TARGET root's total
       !! energy (trc_set_tddft), grid response included unless it was turned
       !! off; a later trc_run_scf drops the result and the gradient is the
       !! SCF's again. trc_run_hessian refuses.
       !!
-      !! Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
-      !! (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
-      !! results held, more than one rank, symmetry that is not lenient);
+      !! Refused with TRC_ERR_STATE (no converged SCF, or a --df fit dropped
+      !! since the SCF) or TRC_ERR_UNSUPPORTED (trc_check_tddft's list, and
+      !! a non-aufbau reference, RI-MP2/RI-CCSD results held, more than one
+      !! rank, symmetry that is not lenient);
       !! TRC_ERR_NOCONV when the Davidson iteration does not converge.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
       character(len=:), allocatable :: refusal
       character(len=256) :: reason
+      type(trc_tddft_run_request_t) :: req
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -6379,6 +6391,11 @@ contains
          cx%message = "trc_run_tddft: run a converged SCF first"
          return
       end if
+      ! A state problem, not an unsupported option: trc_set_jkfit_* drops the fit and leaves the SCF result.
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         cx%message = "trc_run_tddft: the --df fit of the SCF is gone; run the SCF again"
+         return
+      end if
       status = TRC_ERR_UNSUPPORTED
       refusal = tddft_context_refusal(cx, "trc_run_tddft")
       if (len(refusal) > 0) then
@@ -6393,7 +6410,12 @@ contains
       cx%td_opts%verbose = cx%opts%verbose
       ! The response builds its own engine (as trc_run_polarizability does), so the SCF's would only sit beside it.
       call cx%peri%release()
-      if (tddft_grid_reusable(cx)) then
+      if (cx%opts%df .and. tddft_grid_reusable(cx)) then
+         req = trc_tddft_run_request_t(cx%nalpha, cx%opts, cx%td_opts)
+         call trc_tddft_run_solve_fitted_grid(cx%bb%b, cx%la, cx%res, req, cx%td, cx%dfjk, cx%kgrid)
+      else if (cx%opts%df) then
+         call trc_tddft_run_solve_fitted(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%dfjk)
+      else if (tddft_grid_reusable(cx)) then
          call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%kgrid)
       else
          call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td)
@@ -9051,6 +9073,13 @@ contains
                call add_timing("pcm.total", tm%pcm_total)
             end if
          end associate
+      end if
+      if (cx%tddft_ok .and. allocated(cx%td%td%step_t)) then
+         ! The density-fitted excitation solve's step table; the four-centre one has none.
+         call add_timing("tddft.total", sum(cx%td%td%step_t))
+         do k = 1, size(cx%td%td%step_t)
+            call add_timing("tddft.step."//trim(timing_key(cx%td%td%step_names(k))), cx%td%td%step_t(k))
+         end do
       end if
       if (cx%rimp2_ok .and. cx%rimp2_timed) then
          call add_timing("rimp2.total", cx%rimp2_t_total)

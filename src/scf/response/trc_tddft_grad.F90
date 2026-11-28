@@ -72,8 +72,10 @@ module trc_tddft_grad
    !! set to its own, exactly as trc_xc_grad_response_many requires.
    !!
    !! SCOPE. Restricted, singlet, TDA, LDA/GGA and hybrid functionals with an
-   !! exchange fraction c_x, Cartesian basis, no density fitting; the refusals are
-   !! trc_tddft_refuse_reason's, and a spherical basis. A degenerate root has no
+   !! exchange fraction c_x, no density fitting; the refusals are
+   !! trc_tddft_refuse_reason's. The orbitals are Cartesian AO coefficients
+   !! (nao, nmo): a spherical SCF's are folded by the caller (trc_tddft_run), so
+   !! every AO matrix here is Cartesian and nmo may be below nao. A degenerate root has no
    !! unique gradient (any rotation inside the multiplet is an equally good X);
    !! a warning is logged when two computed roots lie within 1e-6 hartree. The
    !! dense algebra (AO/MO transforms, the Z-vector's right-hand side) runs on the
@@ -171,7 +173,8 @@ contains
    pure function trc_tddft_grad_refuse_reason(ref, td, nao_cart) result(msg)
       !! Why this gradient cannot run, or an empty string: what trc_tddft
       !! refuses for the functional, an unconverged or empty result, a basis
-      !! that is not Cartesian-sized, or orbitals that are not (nao, nao).
+      !! that is not Cartesian-sized, or orbitals that are not (nao, nmo) with
+      !! nocc < nmo <= nao.
       type(trc_tddft_reference_t), intent(in) :: ref
       type(trc_tddft_result_t), intent(in) :: td
       integer, intent(in) :: nao_cart
@@ -186,10 +189,14 @@ contains
       if (len_trim(msg) > 0) return
       if (.not. td%converged .or. .not. allocated(td%xamp)) then
          msg = "trc_tddft_grad: needs the amplitudes of a converged TDA solve"
-      else if (size(ref%cmo, 1) /= nao_cart .or. size(ref%cmo, 2) /= nao_cart) then
-         msg = "trc_tddft_grad: the orbitals must be (nao, nao) in the Cartesian basis the integrals use " &
-               //"(spherical bases and linearly dependent sets are not implemented)"
-      else if (size(td%xamp, 1) /= ref%nocc .or. size(td%xamp, 2) /= nao_cart - ref%nocc) then
+      else if (size(ref%cmo, 1) /= nao_cart .or. size(ref%cmo, 2) <= ref%nocc .or. size(ref%cmo, 2) > nao_cart) then
+         msg = "trc_tddft_grad: the orbitals must be (nao, nmo) in the Cartesian basis the integrals use, " &
+               //"with at least one virtual"
+      else if (.not. allocated(ref%eps)) then
+         msg = "trc_tddft_grad: the reference has no orbital energies"
+      else if (size(ref%eps) < size(ref%cmo, 2)) then
+         msg = "trc_tddft_grad: fewer orbital energies than orbitals"
+      else if (size(td%xamp, 1) /= ref%nocc .or. size(td%xamp, 2) /= size(ref%cmo, 2) - ref%nocc) then
          msg = "trc_tddft_grad: the amplitudes do not match the reference's occupied and virtual counts"
       end if
    end function trc_tddft_grad_refuse_reason
@@ -244,11 +251,12 @@ contains
       type(trc_tddft_reference_t), intent(in) :: ref
       type(trc_tddft_result_t), intent(in) :: td
       real(dp), allocatable :: doo(:, :), dvv(:, :), half(:, :), xm(:, :)
-      integer :: k
+      integer :: k, nmo
 
       st%n = size(ref%cmo, 1)
+      nmo = size(ref%cmo, 2)
       st%nocc = ref%nocc
-      st%nvir = st%n - ref%nocc
+      st%nvir = nmo - ref%nocc
       st%nroots = size(td%xamp, 3)
       st%dft = ref%dft
       st%cx = 1.0_dp
@@ -256,8 +264,8 @@ contains
       st%has_budget = ref%has_budget
       st%budget = ref%budget
       st%cocc = ref%cmo(:, 1:st%nocc)
-      st%cvir = ref%cmo(:, st%nocc + 1:st%n)
-      st%eps = ref%eps(1:st%n)
+      st%cvir = ref%cmo(:, st%nocc + 1:nmo)
+      st%eps = ref%eps(1:nmo)
       st%xamp = td%xamp
       allocate (st%tmat(st%n, st%n, st%nroots), st%pdiff(st%n, st%n, st%nroots))
       allocate (doo(st%nocc, st%nocc), dvv(st%nvir, st%nvir), half(st%n, st%n))
@@ -728,7 +736,6 @@ contains
       if (allocated(opts%grad)) deallocate (opts%grad)
       if (allocated(opts%cpks_iterations)) deallocate (opts%cpks_iterations)
       reason = trc_tddft_grad_refuse_reason(ref, td, b%nao)
-      if (len_trim(reason) == 0 .and. b%spherical) reason = "trc_tddft_grad: a spherical basis is not implemented"
       ! The TDA gradient reads X only: an RPA result (Y /= 0) would silently give a wrong gradient.
       if (len_trim(reason) == 0 .and. allocated(td%yamp)) then
          if (maxval(abs(td%yamp)) > 0.0_dp) reason = "trc_tddft_grad: the result has Y amplitudes (an RPA solve); " &

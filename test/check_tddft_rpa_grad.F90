@@ -516,9 +516,9 @@ contains
    end function log_has
 
    subroutine refuse_shapes(error)
-      !! Amplitudes that do not match the orbital counts, and a spherical basis
-      !! (cc-pVDZ loads spherical, with orbitals of the Cartesian size faked so
-      !! the basis is the only thing wrong), are refused, and a refusal leaves
+      !! Amplitudes that do not match the orbital counts, and orbitals left in the
+      !! spherical space (cc-pVDZ loads spherical, nao_sph < nao rows), are
+      !! refused, and a refusal leaves
       !! no output fields of an earlier call.
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_result_t) :: bad, td
@@ -552,7 +552,8 @@ contains
       if (allocated(error)) return
       call check(error, sph%spherical, "cc-pvdz must load spherical")
       if (allocated(error)) return
-      n = sph%nao
+      ! Orbitals still in the spherical space (nao_sph rows): the gradient wants them folded to Cartesian.
+      n = sph%nao_sph
       allocate (cmo(n, n), eps(n), dmat(n, n))
       cmo = 0.0_dp
       do i = 1, n
@@ -567,8 +568,8 @@ contains
       td%yamp = 0.0_dp
       td%omega = 1.0_dp
       call trc_tddft_rpa_gradient_rks(sph, spl, seri, fx%la, r, td, o)
-      call check(error, o%err%has_error() .and. index(o%err%get_message(), "spherical") > 0 .and. &
-                 .not. allocated(o%grad), "a spherical basis must be refused: "//o%err%get_message())
+      call check(error, o%err%has_error() .and. index(o%err%get_message(), "Cartesian basis") > 0 .and. &
+                 .not. allocated(o%grad), "spherical-space orbitals must be refused: "//o%err%get_message())
       call sph%release()
    end subroutine refuse_shapes
 

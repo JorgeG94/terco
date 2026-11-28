@@ -191,8 +191,8 @@ contains
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       integer, intent(in) :: nao, nocc, nvirt, ncomp
-      real(dp), intent(in) :: cmo(nao, nao)
-      real(dp), intent(in) :: eps(nao)
+      real(dp), intent(in) :: cmo(nao, nocc + nvirt)
+      real(dp), intent(in) :: eps(nocc + nvirt)
       real(dp), intent(in) :: dmat(nao, nao)
       real(dp), intent(in) :: bvec(nvirt, nocc, ncomp)
       real(dp), intent(inout) :: u(nvirt, nocc, ncomp)
@@ -268,7 +268,7 @@ contains
          integer :: k, kk
          do k = 1, cg%na
             kk = cg%act(k)
-            call lp%gemm_mat(cmo(:, nocc + 1:nao), cg%p(:, :, kk), temporary_no)
+            call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), cg%p(:, :, kk), temporary_no)
             call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
             call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
             call cphf_axpy_matrix(nao, nao, 1.0_dp, d_ut, d_u(:, :, k))
@@ -287,7 +287,7 @@ contains
             kk = cg%act(k)
             call cphf_axpy_matrix(nao, nao, 1.0_dp, v_resp(:, :, k), g_u(:, :, k))
             call lp%gemm_mat(g_u(:, :, k), cmo(:, 1:nocc), temporary_no2)
-            call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
+            call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
             call cphf_add_diag(nvirt, nocc, cg%diagv, cg%p(:, :, kk), cg%ap(:, :, kk))
          end do
       end subroutine matvec

@@ -274,8 +274,9 @@ for the TDA but misses the third RPA root (0.338715).
 
 A closed-shell reference only: refused, before the SCF and with the reason,
 are triplets, `[molecule] unpaired`, meta-GGA, range-separated and double-hybrid
-functionals and VV10, a spherical basis (`[basis] cartesian = true` makes
-it Cartesian), `[scf] density_fitted`, `[solvation]`, `[correlation]`, `[driver]
+functionals and VV10, an f basis, `[scf] density_fitted` with a gradient or an
+optimisation (the excitation energies over a fit are implemented, the excited-state
+gradient is not yet), `[solvation]`, `[correlation]`, `[driver]
 hessian` and more than one rank. An `--opt` also needs a Hessian-free
 algorithm, or `--opt-init-hessian dlfind`: terco's own finite-difference
 Hessian has no excited-state gradient to difference.

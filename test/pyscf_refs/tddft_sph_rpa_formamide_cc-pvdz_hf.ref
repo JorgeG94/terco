@@ -1,0 +1,17 @@
+# terco pyscf reference v1
+# case: tddft_sph formamide/cc-pvdz/hf (rpa singlets)
+# generator: test/pyscf_refs/generate.py CASES["tddft_sph_formamide_hf"] -> gen_tddft_sph
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: b15ba988b4c9af3523ff4e21b2069f12ad1daed9ae8876ebdfc5c7ded9afee16
+# files: test/check_tddft_sph.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
+E_SCF -1.68948263232479121e+02
+OMEGA 3
+2.37799196352746656e-01 3.21417300088538083e-01 3.32039498875403738e-01
+OSC 3
+1.70767371355983475e-03 1.26421620385369655e-02 2.07956750077290448e-01
+YY 3
+6.45280612611323981e-03 1.60555690942542706e-03 8.45774291088828047e-03
+CONV_TOL 9.99999999999999999e-15
+GRAD_NORM 8.96041028915493935e-13
+END
