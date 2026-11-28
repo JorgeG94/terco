@@ -190,6 +190,30 @@
 ! routine refuses (message in `ls%status`, nothing written) after the integrals
 ! were rebuilt. Re-`init` it.
 !
+! ANY TENSOR. `rccsd_ladder_tensor` runs the same routines on a caller's t(i,j,c,d) in place of tau:
+!     R(i,j,a,b) = sum_cd (ac|bd) t(i,j,c,d)         without `amps`
+!     R(i,j,a,b) = sum_cd Wvvvv(a,b,c,d) t(i,j,c,d)  with `amps`, whose t1 makes the dressing
+! The CCSD Lambda equations need the first on l2 (undressed b_vv); by (ac|bd) = (ca|db) it is also
+! sum_ab l2(i,j,a,b) (ac|bd) read at (i,j,c,d). Without `tau_symmetric` every form, dressed or not, is exact for
+! ANY t. With it, the half form's one-contraction path and the dressed correction that goes with it contract
+! (t(i,j,c,d) + t(j,i,d,c))/2: right for a t with t(j,i,d,c) = t(i,j,c,d), which l2 has. The assembled and direct
+! forms have no such path, and this routine refuses the flag there (unlike `rccsd_ladder_pp`, which ignores it):
+! AUTO picks the form by size and budget, so ignoring it would make the result of a t without the symmetry depend
+! on the system and the memory. A caller of a symmetric t passes tau_symmetric = (ls%form == RCCSD_LADDER_HALF).
+!
+! TRANSPOSED DRESSING. `rccsd_ladder_transposed` runs the three forms on the factor
+!     bT(a,c;P) = b_vv(a,c;P) - sum_k b_ov(k,a;P) t1(k,c),
+! which is bt(c,a;P) of the dressed build: sum_P bT(a,c;P) bT(b,d;P) is the dressed build's Wt read as (cd|ab), what
+! contracts a tensor's LOWER pair. It is not Wvvvv of anything and has no t1 t1 correction; it keeps the one symmetry
+! the half form needs, (a,c) <-> (b,d), so all three forms and the one-contraction path apply. The CCSD Lambda
+! equations use it on l2: with l2(j,i,b,a) = l2(i,j,a,b), t2 likewise and tau = t2 + t1 t1,
+!     1/2 sum_cd (ac|bd) l2(ij;cd) + 1/2 sum_kl (ka|lb) [l2 tau](ij;kl) - sum_kc (kb|ac) sum_d l2(ij;cd) t1(k,d)
+!   = 1/2 R(i,j,a,b) + 1/2 sum_kl (ka|lb) [l2 t2](ij;kl),      [l2 x](ij;kl) = sum_cd l2(ij;cd) x(kl;cd),
+! after the symmetrisation (i,j,a,b) + (j,i,b,a), which the equations apply to it. The last term on the left,
+! 2 o^3 v^3 + 2 o v^3 naux flops with an o v^2 slab per c, is then never formed.
+! One V100, adenine cc-pVDZ (no 25, nv 130, naux 630), half form, symmetric: 0.068 s, against 0.071 s for the dressed
+! CCSD ladder of the same tensor.
+!
 ! SHARES (over the ranks of a run, trc_rccsd_driver RANKS). The half form's passes run over d = ls%d_lo..ls%d_hi
 ! (`init` sets 1..nv; an empty range, d_hi < d_lo, runs no pass), and the ladder is linear in that range: N, N' and the
 ! symmetrising or transposing kernel that finishes the passes (h = N + N^T) are linear in N, so the partial arrays of the
@@ -238,6 +262,7 @@ module trc_rccsd_ladder
 
    public :: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t
    public :: rccsd_ladder_pp, rccsd_ladder_dressing, rccsd_ladder_build, rccsd_ladder_partial, rccsd_ladder_correct
+   public :: rccsd_ladder_tensor, rccsd_ladder_transposed
    public :: rccsd_ladder_column_flops, rccsd_ladder_correction_flops
    public :: rccsd_ladder_prefers_direct, rccsd_ladder_macs, rccsd_ladder_flops
    public :: rccsd_ladder_dressing_macs, rccsd_ladder_dressing_flops
@@ -441,7 +466,7 @@ contains
       if (this%form == RCCSD_LADDER_ASSEMBLED) then
          this%cd_batch = plan_batch(opts%cd_batch, budget, nv2, int(nv2))
       else if (this%form == RCCSD_LADDER_HALF) then
-         this%d_batch = plan_batch(opts%d_batch, half_budget, half_item, nv)
+         this%d_batch = forced_d_batch(plan_batch(opts%d_batch, half_budget, half_item, nv))
       else
          this%p_batch = plan_batch(opts%p_batch, budget, 2_int64*no2*nv2, naux)
       end if
@@ -464,6 +489,22 @@ contains
       ! The dressed build's correction reads ovov as ((k,l);(c,d)): it depends on the integrals only, so once here.
       if (this%form == RCCSD_LADDER_HALF) call kernel_pack_ovov(no, nv, ints%ovov, this%ovovp)
    end subroutine lscratch_init
+
+   function forced_d_batch(planned) result(n)
+      !! `planned` capped by TERCO_RCCSD_LADDER_D_CHUNK when that is a positive integer (TESTING: forces several
+      !! passes of the half form on a small molecule)
+      integer, intent(in) :: planned
+      integer :: n
+
+      character(len=16) :: text
+      integer :: stat, cap
+
+      n = planned
+      call get_environment_variable("TERCO_RCCSD_LADDER_D_CHUNK", text, status=stat)
+      if (stat /= 0) return
+      read (text, *, iostat=stat) cap
+      if (stat == 0 .and. cap >= 1) n = min(planned, cap)
+   end function forced_d_batch
 
    pure function work_bytes(this) result(bytes)
       !! Bytes of the work arrays of the plan in `this`, host and device each
@@ -866,36 +907,42 @@ contains
       call ls%status%clear()
       if (.not. ready(ints, lad, ls)) return
       if (.not. ready_tau(ints, inter, ls)) return
-      call ladder_pp_run(ints, inter, lad, ls, la, sym)
+      call ladder_pp_run(ints, inter%tau, lad, ls, la, sym, ints%b_vv)
    end subroutine rccsd_ladder_pp
 
-   subroutine ladder_pp_run(ints, inter, lad, ls, la, tau_symmetric)
-      !! `rccsd_ladder_pp` after its checks
+   subroutine ladder_pp_run(ints, tau, lad, ls, la, tau_symmetric, fac)
+      !! The undressed ladder after the checks. Here and below `tau` is whatever o^2 v^2 tensor is being contracted,
+      !! present on the device, and `fac` the factor whose products sum_P fac(a,c;P) fac(b,d;P) it is contracted
+      !! with, laid out as b_vv (a fastest), present too: b_vv for L, the transposed dressed factor for
+      !! `rccsd_ladder_transposed`.
       type(trc_rccsd_ints_t), intent(in) :: ints
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
       logical, intent(in) :: tau_symmetric
+      real(dp), intent(in) :: fac(ints%nv*ints%nv, ints%naux)
 
       ls%flops_pp = 0_int64
       call kernel_zero(ints%no*ints%no*ints%nv*ints%nv, lad%h)
       if (ls%form == RCCSD_LADDER_ASSEMBLED) then
-         call ladder_assembled(ints, inter, lad, ls, la)
+         call ladder_assembled(ints, tau, lad, ls, la, fac)
       else if (ls%form == RCCSD_LADDER_HALF) then
-         call ladder_half(ints, inter, lad, ls, la, tau_symmetric, ints%b_vv)
+         call ladder_half(ints, tau, lad, ls, la, tau_symmetric, fac)
       else
-         call ladder_direct(ints, inter, lad, ls, la)
+         call ladder_direct(ints, tau, lad, ls, la, fac)
       end if
    end subroutine ladder_pp_run
 
-   subroutine ladder_assembled(ints, inter, lad, ls, la)
-      !! The assembled form (module header): per batch of cd columns, W by batched GEMMs, then one GEMM with tau
+   subroutine ladder_assembled(ints, tau, lad, ls, la, fac)
+      !! The assembled form (module header): per batch of cd columns, W by batched GEMMs, then one GEMM with tau.
+      !! `fac` as in `ladder_pp_run`.
       type(trc_rccsd_ints_t), intent(in) :: ints
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
+      real(dp), intent(in) :: fac(ints%nv*ints%nv, ints%naux)
 
       type(trc_gemm_batch_t) :: shape
       integer :: no, nv, naux, nv2, cd0, cd1, cd, col, nb, c, d, nrun
@@ -917,8 +964,7 @@ contains
             nrun = min(nv - c + 1, cd1 - cd + 1)
             shape = trc_gemm_batch(nv, nv, naux, nrun, lda=nv2, ldb=nv2, ldc=nv, &
                                    sa=int(nv, int64), sb=0_int64, sc=int(nv2, int64), transb="T")
-            call la%gemm_batched(shape, ints%b_vv((c - 1)*nv + 1, 1), ints%b_vv((d - 1)*nv + 1, 1), &
-                                 ls%wbatch(col*nv2 + 1))
+            call la%gemm_batched(shape, fac((c - 1)*nv + 1, 1), fac((d - 1)*nv + 1, 1), ls%wbatch(col*nv2 + 1))
             ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(shape%m, shape%n, shape%k, shape%count)
             col = col + nrun
             cd = cd + nrun
@@ -927,18 +973,18 @@ contains
          ! contiguous column range of it, starting at the (c,d) of cd0.
          c = mod(cd0 - 1, nv) + 1
          d = (cd0 - 1)/nv + 1
-         call la%gemm("N", "T", no*no, nv2, nb, 1.0_dp, inter%tau(1, 1, c, d), no*no, ls%wbatch, nv2, 1.0_dp, lad%h, no*no)
+         call la%gemm("N", "T", no*no, nv2, nb, 1.0_dp, tau(1, 1, c, d), no*no, ls%wbatch, nv2, 1.0_dp, lad%h, no*no)
          ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(no*no, nv2, nb)
       end do
    end subroutine ladder_assembled
 
-   subroutine ladder_half(ints, inter, lad, ls, la, tau_symmetric, fac)
+   subroutine ladder_half(ints, tau, lad, ls, la, tau_symmetric, fac)
       !! The half form (module header): per pass of d = d0..d1, C by one GEMM, its c >= d columns re-sorted with
       !! their weight into W2 and the tau columns gathered, then one GEMM with tau (two for a general tau).
       !! `fac` is the factor whose products sum_P fac(a,c;P) fac(b,d;P) are contracted: b_vv for L, the dressed bt
       !! for the dressed build; both are laid out as b_vv (rows (a,c), a fastest).
       type(trc_rccsd_ints_t), intent(in) :: ints
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
@@ -968,13 +1014,13 @@ contains
          ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(nv*nvc, nv*nd, naux)
          call kernel_half_resort(nv, nvc, nd, d0, ncol, ls%cbuf, ls%w2)
          if (tau_symmetric) then
-            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_SYM, inter%tau, ls%taus)
+            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_SYM, tau, ls%taus)
             call la%gemm("N", "T", no2, nv2, ncol, 1.0_dp, ls%taus, no2, ls%w2, nv2, 1.0_dp, ls%taut, no2)
             ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(no2, nv2, ncol)
          else
-            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_CD, inter%tau, ls%taus)
+            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_CD, tau, ls%taus)
             call la%gemm("N", "T", no2, nv2, ncol, 1.0_dp, ls%taus, no2, ls%w2, nv2, 1.0_dp, lad%h, no2)
-            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_DC, inter%tau, ls%taus2)
+            call kernel_half_gather(no, nv, nvc, nd, d0, ncol, HALF_TAU_DC, tau, ls%taus2)
             call la%gemm("N", "T", no2, nv2, ncol, 1.0_dp, ls%taus2, no2, ls%w2, nv2, 1.0_dp, ls%taut, no2)
             ls%flops_pp = ls%flops_pp + 2_int64*rccsd_steps_gemm_flops(no2, nv2, ncol)
          end if
@@ -987,13 +1033,15 @@ contains
       end if
    end subroutine ladder_half
 
-   subroutine ladder_direct(ints, inter, lad, ls, la)
-      !! The direct form (module header): per batch of auxiliary functions, GEMM against tau, a pack, GEMM against b_vv
+   subroutine ladder_direct(ints, tau, lad, ls, la, fac)
+      !! The direct form (module header): per batch of auxiliary functions, GEMM against tau, a pack, GEMM against the
+      !! factor. `fac` as in `ladder_pp_run`.
       type(trc_rccsd_ints_t), intent(in) :: ints
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
+      real(dp), intent(in) :: fac(ints%nv*ints%nv, ints%naux)
 
       type(trc_gemm_batch_t) :: shape
       integer :: no, nv, naux, p0, np
@@ -1001,18 +1049,17 @@ contains
       no = ints%no
       nv = ints%nv
       naux = ints%naux
-      call kernel_pack_taut(no, nv, inter%tau, ls%taut)
+      call kernel_pack_taut(no, nv, tau, ls%taut)
       do p0 = 1, naux, ls%p_batch
          np = min(ls%p_batch, naux - p0 + 1)
          ! Y(a, d ij; P) = sum_c G_P(a,c) taut(c, d ij): G_P is the (v, v) column P of b_vv, taut is shared
          shape = trc_gemm_batch(nv, nv*no*no, nv, np, lda=nv, ldb=nv, ldc=nv, &
                                 sa=int(nv, int64)*nv, sb=0_int64, sc=int(nv, int64)*nv*no*no)
-         call la%gemm_batched(shape, ints%b_vv(1, p0), ls%taut, ls%gtau)
+         call la%gemm_batched(shape, fac(1, p0), ls%taut, ls%gtau)
          ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(shape%m, shape%n, shape%k, shape%count)
          call kernel_pack_y2(no, nv, np, ls%gtau, ls%gpack)
          ! L(ij a; b) += sum_{d,P} Y2(ij a; d P) b_vv(b, d; P): columns p0.. of b_vv are the matrix (v; d P), ld v
-         call la%gemm("N", "T", no*no*nv, nv, nv*np, 1.0_dp, ls%gpack, no*no*nv, ints%b_vv(1, p0), nv, 1.0_dp, &
-                      lad%h, no*no*nv)
+         call la%gemm("N", "T", no*no*nv, nv, nv*np, 1.0_dp, ls%gpack, no*no*nv, fac(1, p0), nv, 1.0_dp, lad%h, no*no*nv)
          ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(no*no*nv, nv, nv*np)
       end do
    end subroutine ladder_direct
@@ -1034,14 +1081,14 @@ contains
       if (.not. ready(ints, lad, ls)) return
       if (.not. ready_tau(ints, inter, ls)) return
       if (.not. ready_amps(ints, amps, ls)) return
-      call ladder_dressing_run(ints, amps, inter, lad, ls, la)
+      call ladder_dressing_run(ints, amps, inter%tau, lad, ls, la)
    end subroutine rccsd_ladder_dressing
 
-   subroutine ladder_dressing_run(ints, amps, inter, lad, ls, la)
+   subroutine ladder_dressing_run(ints, amps, tau, lad, ls, la)
       !! `rccsd_ladder_dressing` after its checks
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
@@ -1052,9 +1099,9 @@ contains
       do half = 1, 2
          ! the pack of half 1 comes out with its (c,d) pair in the order (d,c): tau is packed to match
          if (half == 1) then
-            call kernel_pack_taut_swapped(ints%no, ints%nv, inter%tau, ls%taut)
+            call kernel_pack_taut_swapped(ints%no, ints%nv, tau, ls%taut)
          else
-            call kernel_pack_taut(ints%no, ints%nv, inter%tau, ls%taut)
+            call kernel_pack_taut(ints%no, ints%nv, tau, ls%taut)
          end if
          call dressing_half(half, ints, amps, lad, ls, la)
       end do
@@ -1119,7 +1166,6 @@ contains
       type(step_table_t), intent(inout), optional :: stab
       logical, intent(in), optional :: tau_symmetric
 
-      type(timer_type) :: tc
       logical :: sym
 
       sym = .false.
@@ -1128,19 +1174,141 @@ contains
       if (.not. ready(ints, lad, ls)) return
       if (.not. ready_tau(ints, inter, ls)) return
       if (.not. ready_amps(ints, amps, ls)) return
+      call ladder_build_run(ints, amps, inter%tau, lad, ls, la, sym, stab)
+   end subroutine rccsd_ladder_build
+
+   subroutine ladder_build_run(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
+      !! `rccsd_ladder_build` after its checks
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
+      type(trc_rccsd_ladder_t), intent(inout) :: lad
+      type(trc_rccsd_lscratch_t), intent(inout) :: ls
+      type(trc_linalg_t), intent(in) :: la
+      logical, intent(in) :: tau_symmetric
+      type(step_table_t), intent(inout), optional :: stab
+
+      type(timer_type) :: tc
+
       if (ls%form == RCCSD_LADDER_HALF) then
-         call ladder_build_dressed(ints, amps, inter, lad, ls, la, sym, stab)
+         call ladder_build_dressed(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
       else
          call rccsd_steps_open(stab, la, RCCSD_ST_LADDER, tc)
-         call ladder_pp_run(ints, inter, lad, ls, la, sym)
+         call ladder_pp_run(ints, tau, lad, ls, la, tau_symmetric, ints%b_vv)
          ! The tallies of the GEMMs actually called, not the formulas: the table then stays right when the
          ! GEMMs change (the check compares the tallies with the formulas).
          call rccsd_steps_close(stab, la, RCCSD_ST_LADDER, tc, ls%flops_pp)
          call rccsd_steps_open(stab, la, RCCSD_ST_DRESSING, tc)
-         call ladder_dressing_run(ints, amps, inter, lad, ls, la)
+         call ladder_dressing_run(ints, amps, tau, lad, ls, la)
          call rccsd_steps_close(stab, la, RCCSD_ST_DRESSING, tc, ls%flops_dressing)
       end if
-   end subroutine rccsd_ladder_build
+   end subroutine ladder_build_run
+
+   subroutine rccsd_ladder_tensor(ints, t, lad, ls, la, amps, tau_symmetric)
+      !! The ladder of an arbitrary o^2 v^2 tensor, overwriting `lad%h` (module header, ANY TENSOR):
+      !! sum_cd (ac|bd) t(i,j,c,d), or with `amps` sum_cd Wvvvv(a,b,c,d) t(i,j,c,d), dressed by amps%t1.
+      !!
+      !! `t(i,j,a,b)` must be present on the device and current there, as must `amps` when given. Pass a whole
+      !! array or a contiguous part of one: for anything else the compiler passes an unmapped temporary. It must not
+      !! be `lad%h`: the routine zeroes `lad%h` before it reads t, and nothing checks this. `tau_symmetric`
+      !! (default false) takes the half form's one-contraction path, which gives the ladder of
+      !! (t(i,j,c,d) + t(j,i,d,c))/2, so set it only when t(j,i,d,c) = t(i,j,c,d); t itself is not checked. It is
+      !! refused unless `ls%form` is RCCSD_LADDER_HALF (module header, ANY TENSOR). The whole ladder only: a scratch
+      !! cut to a rank's share is refused.
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      real(dp), intent(in), contiguous :: t(:, :, :, :)
+      type(trc_rccsd_ladder_t), intent(inout) :: lad
+      type(trc_rccsd_lscratch_t), intent(inout) :: ls
+      type(trc_linalg_t), intent(in) :: la
+      type(trc_rccsd_amps_t), intent(in), optional :: amps
+      logical, intent(in), optional :: tau_symmetric
+
+      logical :: sym
+
+      sym = .false.
+      if (present(tau_symmetric)) sym = tau_symmetric
+      call ls%status%clear()
+      if (.not. ready_tensor(ints, shape(t), lad, ls, sym)) return
+      if (present(amps)) then
+         if (.not. ready_amps(ints, amps, ls)) return
+         call ladder_build_run(ints, amps, t, lad, ls, la, sym)
+      else
+         call ladder_pp_run(ints, t, lad, ls, la, sym, ints%b_vv)
+      end if
+   end subroutine rccsd_ladder_tensor
+
+   subroutine rccsd_ladder_transposed(ints, t, amps, lad, ls, la, tau_symmetric)
+      !! The ladder of an arbitrary o^2 v^2 tensor with the TRANSPOSED t1 dressing, overwriting `lad%h` (module
+      !! header, TRANSPOSED DRESSING):
+      !!     R(i,j,a,b) = sum_cd sum_P bT(a,c;P) bT(b,d;P) t(i,j,c,d),   bT(a,c;P) = b_vv(a,c;P) - sum_k b_ov(k,a;P) t1(k,c)
+      !!
+      !! What the CCSD Lambda equations contract with l2. NOT `rccsd_ladder_tensor` with `amps`, which dresses the
+      !! other index of each factor and subtracts nothing of this. `t`, `amps`, `lad%h` and `tau_symmetric` as for
+      !! `rccsd_ladder_tensor`; every form. bt goes into `ls%bt`, which the assembled and direct plans do not hold:
+      !! it is allocated at their first call (v^2 naux doubles, refused when it does not fit) and kept.
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      real(dp), intent(in), contiguous :: t(:, :, :, :)
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_ladder_t), intent(inout) :: lad
+      type(trc_rccsd_lscratch_t), intent(inout) :: ls
+      type(trc_linalg_t), intent(in) :: la
+      logical, intent(in), optional :: tau_symmetric
+
+      type(trc_gemm_batch_t) :: per_p
+      integer :: no, nv, naux, nv2
+      logical :: sym
+
+      sym = .false.
+      if (present(tau_symmetric)) sym = tau_symmetric
+      call ls%status%clear()
+      if (.not. ready_tensor(ints, shape(t), lad, ls, sym)) return
+      if (.not. ready_amps(ints, amps, ls)) return
+      no = ints%no
+      nv = ints%nv
+      naux = ints%naux
+      nv2 = nv*nv
+      if (.not. allocated(ls%bt)) then
+         if (.not. device_memory_fits(ls%status, "trc_rccsd_ladder: the dressed factor of the transposed ladder (v "// &
+                                      to_string(nv)//", naux "//to_string(naux)//")", &
+                                      8_int64*int(nv2, int64)*naux)) return
+         allocate (ls%bt(int(nv2, int64)*naux))
+         !$acc enter data create(ls%bt)
+         ls%bytes = ls%bytes + 8_int64*int(nv2, int64)*naux
+      end if
+      ! bT(:,:,P) = b_vv(:,:,P) - B_P^T t1 with B_P(k,a) = b_ov(k,a;P), one item per P, t1 shared
+      call kernel_copy(nv2*naux, ints%b_vv, ls%bt)
+      per_p = trc_gemm_batch(nv, nv, no, naux, lda=no, ldb=no, ldc=nv, sa=int(no, int64)*nv, sb=0_int64, &
+                             sc=int(nv2, int64), transa="T", transb="N")
+      call la%gemm_batched(per_p, ints%b_ov, amps%t1, ls%bt, -1.0_dp, 1.0_dp)
+      ls%flops_dressing = rccsd_steps_gemm_flops(per_p%m, per_p%n, per_p%k, per_p%count)
+      call ladder_pp_run(ints, t, lad, ls, la, sym, ls%bt)
+   end subroutine rccsd_ladder_transposed
+
+   function ready_tensor(ints, extent, lad, ls, tau_symmetric) result(ok)
+      !! `ready`, and what a call on a caller's tensor of shape `extent` needs besides; else `ls%status` says what
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      integer, intent(in) :: extent(4)
+      type(trc_rccsd_ladder_t), intent(in) :: lad
+      type(trc_rccsd_lscratch_t), intent(inout) :: ls
+      logical, intent(in) :: tau_symmetric
+      logical :: ok
+
+      ok = .false.
+      if (.not. ready(ints, lad, ls)) return
+      if (any(extent /= [ints%no, ints%no, ints%nv, ints%nv])) then
+         call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the tensor does not have the shape (no, no, nv, nv)")
+         return
+      end if
+      if (ls%d_lo /= 1 .or. ls%d_hi /= ints%nv) then
+         call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the ladder of a tensor takes no share of the d range")
+         return
+      end if
+      if (tau_symmetric .and. ls%form /= RCCSD_LADDER_HALF) then
+         call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: tau_symmetric on a tensor needs the half form")
+         return
+      end if
+      ok = .true.
+   end function ready_tensor
 
    subroutine rccsd_ladder_partial(ints, amps, inter, lad, ls, la, stab, tau_symmetric)
       !! The first half of the dressed half-form build, for a RANK'S SHARE of the ladder (module header, SHARES): the
@@ -1165,7 +1333,7 @@ contains
          call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: a share of the ladder needs the half form")
          return
       end if
-      call dressed_partial(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+      call dressed_partial(ints, amps, inter%tau, lad, ls, la, tau_symmetric, stab)
    end subroutine rccsd_ladder_partial
 
    subroutine rccsd_ladder_correct(ints, amps, inter, lad, ls, la, stab, tau_symmetric)
@@ -1189,30 +1357,30 @@ contains
          call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the dressed correction needs the half form")
          return
       end if
-      call dressed_correction(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+      call dressed_correction(ints, amps, inter%tau, lad, ls, la, tau_symmetric, stab)
    end subroutine rccsd_ladder_correct
 
-   subroutine ladder_build_dressed(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+   subroutine ladder_build_dressed(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
       !! L + D by the half form on the dressed factor (module header, DRESSED BUILD): the half form's passes on bt
       !! give sum_cd Wt tau, then the t1 t1 ovov part of Wt, which Wvvvv does not have, is subtracted
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
       logical, intent(in) :: tau_symmetric
       type(step_table_t), intent(inout), optional :: stab
 
-      call dressed_partial(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
-      call dressed_correction(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+      call dressed_partial(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
+      call dressed_correction(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
    end subroutine ladder_build_dressed
 
-   subroutine dressed_partial(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+   subroutine dressed_partial(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
       !! bt, then the passes of the share `ls%d_lo..ls%d_hi` into `lad%h` (the whole range in a one-rank run)
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
@@ -1241,15 +1409,15 @@ contains
       call rccsd_steps_close(stab, la, RCCSD_ST_DRESSING, tc)
       call rccsd_steps_open(stab, la, RCCSD_ST_LADDER, tc)
       call kernel_zero(no2*nv2, lad%h)
-      call ladder_half(ints, inter, lad, ls, la, tau_symmetric, ls%bt)
+      call ladder_half(ints, tau, lad, ls, la, tau_symmetric, ls%bt)
       call rccsd_steps_close(stab, la, RCCSD_ST_LADDER, tc, ls%flops_pp)
    end subroutine dressed_partial
 
-   subroutine dressed_correction(ints, amps, inter, lad, ls, la, tau_symmetric, stab)
+   subroutine dressed_correction(ints, amps, tau, lad, ls, la, tau_symmetric, stab)
       !! Y, G and X of the module header, subtracted from `lad%h`
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
-      type(trc_rccsd_inter_t), intent(in) :: inter
+      real(dp), intent(in) :: tau(ints%no, ints%no, ints%nv, ints%nv)
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
@@ -1267,7 +1435,7 @@ contains
       call rccsd_steps_open(stab, la, RCCSD_ST_DRESSING, tc)
       ! Y(ij; k,l) = sum_cd tau(ij; cd) ovov(k,c,l,d); G(ij,k; b) = sum_l Y(ij,k; l) t1(l,b);
       ! X(ij; a, b) = sum_k G(ij; k, b) t1(k, a), one item per b, into taut (free once the passes are done)
-      call la%gemm("N", "T", no2, no2, nv2, 1.0_dp, inter%tau, no2, ls%ovovp, no2, 0.0_dp, ls%ymat, no2)
+      call la%gemm("N", "T", no2, no2, nv2, 1.0_dp, tau, no2, ls%ovovp, no2, 0.0_dp, ls%ymat, no2)
       ls%flops_dressing = ls%flops_dressing + rccsd_steps_gemm_flops(no2, no2, nv2)
       call la%gemm("N", "N", no2*no, nv, no, 1.0_dp, ls%ymat, no2*no, amps%t1, no, 0.0_dp, ls%gmat, no2*no)
       ls%flops_dressing = ls%flops_dressing + rccsd_steps_gemm_flops(no2*no, nv, no)

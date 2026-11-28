@@ -6,6 +6,7 @@ target_sources(
           trc_rccsd_inter.F90         # RI-CCSD(T): tau, Foo/Fvv/Fov/Loo/Lvv, the energy functional, MP2 amplitudes
           trc_rccsd_w.F90             # RI-CCSD(T): the two-particle intermediates Woooo, Wvoov, Wvovo
           trc_rccsd_ladder.F90        # RI-CCSD(T): the particle-particle ladder (assembled and direct forms) and its t1 dressing
+          trc_rccsd_lambda_inter.F90   # RI-CCSD Lambda: the once-per-solve intermediates, no o v^3 or v^4 array
           trc_rccsd_update.F90        # RI-CCSD(T): the T1/T2 amplitude update (Hirata Eqs. 35-36) from the modules above
           trc_rccsd_diis.F90          # RI-CCSD(T): amplitude DIIS and the step measure, on the device
           trc_rccsd_mpi.F90             # RI-CCSD(T): the collective calls of the multi-rank run
@@ -13,6 +14,9 @@ target_sources(
           trc_rccsd_share.F90           # RI-CCSD(T): the d ranges of the ladder over the ranks of a run
           trc_rccsd_dist.F90            # RI-CCSD(T): the top of an iteration over ranks, and a follower's loop
           trc_rccsd_driver.F90        # RI-CCSD(T): the iteration driver, convergence, result and handle
+          trc_rccsd_lambda_update.F90  # RI-CCSD Lambda: one update of l1, l2, no o v^3 or v^4 array
+          trc_rccsd_lambda.F90         # RI-CCSD Lambda: the iteration, DIIS, convergence, refusals
+          trc_rccsd_density.F90        # RI-CCSD: the unrelaxed correlation densities for the gradient, no o v^3 or v^4 array
           trc_rccsd_triples_dev.F90   # RI-CCSD(T): the (T) correction on the device, tiled gemms and one energy kernel
           trc_rccsd_triples_ijk.F90   # RI-CCSD(T): the (T) correction on the device, driven by occupied triples
           trc_rccsd_triples.F90       # RI-CCSD(T): the (T) correction, host reference (Rendell-Lee-Komornicki)
