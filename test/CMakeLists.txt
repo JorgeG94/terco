@@ -286,6 +286,19 @@ terco_add_check(check_rccsd_lambda check_rccsd_lambda.F90 NEEDS_BASIS NEEDS_PYSC
 target_link_libraries(check_rccsd_lambda PRIVATE test-drive::test-drive terco_ccsd_grad_support)
 set_tests_properties(terco/check_rccsd_lambda PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The unrelaxed RI-CCSD densities (src/post_hf/ccsd/trc_rccsd_density.F90) against the dense two-particle density
+# in host loops (rccsd_density_host) at random and at converged amplitudes, and against the density probes of the
+# same references (read, not on their "# files:" lines). The second entry caps the vvvv slabs from the environment.
+terco_add_check(check_rccsd_density check_rccsd_density.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_sources(check_rccsd_density PRIVATE rccsd_density_host.F90)
+target_link_libraries(check_rccsd_density PRIVATE test-drive::test-drive terco_ccsd_grad_support)
+set_tests_properties(terco/check_rccsd_density PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_density_chunked COMMAND check_rccsd_density)
+set_tests_properties(
+  terco/check_rccsd_density_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_CCDENS_D_CHUNK=1")
+
 terco_add_check(check_ccsd_grad_fd check_ccsd_grad_fd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ccsd_grad_fd PRIVATE test-drive::test-drive terco_ccsd_grad_support)
 # LONG: 144 SCF and RI-CCSD(T) runs, about 40 s on the host; the nightly run keeps it,
