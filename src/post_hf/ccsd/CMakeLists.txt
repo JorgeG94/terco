@@ -6,6 +6,7 @@ target_sources(
           trc_rccsd_inter.F90         # RI-CCSD(T): tau, Foo/Fvv/Fov/Loo/Lvv, the energy functional, MP2 amplitudes
           trc_rccsd_w.F90             # RI-CCSD(T): the two-particle intermediates Woooo, Wvoov, Wvovo
           trc_rccsd_ladder.F90        # RI-CCSD(T): the particle-particle ladder (assembled and direct forms) and its t1 dressing
+          trc_rccsd_lambda_inter.F90   # RI-CCSD Lambda: the once-per-solve intermediates, no o v^3 or v^4 array
           trc_rccsd_update.F90        # RI-CCSD(T): the T1/T2 amplitude update (Hirata Eqs. 35-36) from the modules above
           trc_rccsd_diis.F90          # RI-CCSD(T): amplitude DIIS and the step measure, on the device
           trc_rccsd_mpi.F90             # RI-CCSD(T): the collective calls of the multi-rank run

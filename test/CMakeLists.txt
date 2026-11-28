@@ -121,6 +121,10 @@ target_link_libraries(check_selftest PRIVATE test-drive::test-drive)
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 target_link_libraries(check_linalg_mat PRIVATE test-drive::test-drive)
 
+# trc_contract's reorderings and pairwise contractions against plain loops (see check_contract.F90's header).
+terco_add_check(check_contract check_contract.F90)
+target_link_libraries(check_contract PRIVATE test-drive::test-drive)
+
 # A signalling-NaN SCF guess density -- what a density read past the end
 # of an undersized buffer (src/opt/trc_dlfind_bridge.F90's own --opt-neb
 # per-image density) can hand back -- comes back through trc_run_scf's
@@ -194,6 +198,31 @@ set_tests_properties(terco/check_rccsd_w PROPERTIES SKIP_REGULAR_EXPRESSION "SKI
 terco_add_check(check_rccsd_ladder check_rccsd_ladder.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The ladder of an arbitrary o^2 v^2 tensor (rccsd_ladder_tensor, what the Lambda equations take of l2): a random
+# tensor without symmetry and a pair-symmetric one in every form, dressed and undressed, against host loops over b_vv
+# and b_ov; tau_symmetric refused outside the half form. No reference file.
+terco_add_check(check_rccsd_ladder_tensor check_rccsd_ladder_tensor.F90 NEEDS_BASIS)
+target_link_libraries(check_rccsd_ladder_tensor PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_ladder_tensor PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_ladder_tensor_chunked COMMAND check_rccsd_ladder_tensor)
+set_tests_properties(
+  terco/check_rccsd_ladder_tensor_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_RCCSD_LADDER_D_CHUNK=1")
+
+# The once-per-solve intermediates of the CCSD Lambda equations (src/post_hf/ccsd/trc_rccsd_lambda_inter.F90) at
+# random amplitudes against host loops with the (ia|bc) formed from the factors, frozen core 1 and 0, forced blocks,
+# the least contraction scratch and the refusals. No reference file. The second entry runs it with the environment's
+# block cap.
+terco_add_check(check_rccsd_lambda_inter check_rccsd_lambda_inter.F90 NEEDS_BASIS)
+target_link_libraries(check_rccsd_lambda_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_lambda_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_lambda_inter_chunked COMMAND check_rccsd_lambda_inter)
+set_tests_properties(
+  terco/check_rccsd_lambda_inter_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_LAMBDA_WOOVO_CHUNK=2")
 
 # The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
 # _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,

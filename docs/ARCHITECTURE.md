@@ -40,7 +40,7 @@ Numbers in brackets refer to the references at the end.
 
 | Layer | Directory | Main objects |
 |---|---|---|
-| Core | `src/core/` | Boys function, Cartesian and spherical tables, `trc_linalg_t`, `error_t`, MPI device policy |
+| Core | `src/core/` | Boys function, Cartesian and spherical tables, `trc_linalg_t`, `trc_contract_plan_t` (pairwise contractions of up to four-index tensors), `error_t`, MPI device policy |
 | Basis | `src/basis/`, `src/core/trc_basis_types.F90` | `trc_basis_t`, `trc_pairlist_t`, JSON reader, decontraction |
 | Integrals | `src/eri/`, `src/generated/` | `trc_eri_t`, `pair_bins_t`, the 1e/PCM/DF drivers (`trc_integrals`), per-class kernels |
 | Grids | `src/grid/` | `dft_grid_t` |
@@ -511,7 +511,7 @@ with the (T) code):
 | `trc_rccsd_ints` | the fitted integral blocks and the three-index factors `b_oo`, `b_ov`, `b_vv` (no dense `(ia|bc)`) |
 | `trc_rccsd_inter` | tau, the one-particle intermediates, the energy functional, the MP2 start; the amplitudes type |
 | `trc_rccsd_w` | the two-particle intermediates Woooo, Wvoov, Wvovo |
-| `trc_rccsd_ladder` | the particle-particle ladder (assembled, direct, half form) and its t1 dressing |
+| `trc_rccsd_ladder` | the particle-particle ladder (assembled, direct, half form) and its t1 dressing, on tau or any o^2 v^2 tensor |
 | `trc_rccsd_xfer` | the point-to-point transfers of a multi-rank iteration (amplitudes down, partial ladders up) |
 | `trc_rccsd_update` | the amplitude update (T1 and T2 equations), driving the modules above |
 | `trc_rccsd_diis` | DIIS on the amplitudes (full, packed, host history) and the measure of a step |
