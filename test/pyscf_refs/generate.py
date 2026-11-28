@@ -5325,6 +5325,246 @@ def gen_rccsd_ints():
               f"E_MP2 {e_mp2:.14e} E_T_fixed {e_t_fixed:.14e}")
 
 
+def _ri_ccsd_response_gradient(mol, mf, mycc, auxbasis, frozen, triples):
+    """The exact-response RI-CCSD / RI-CCSD(T) analytic gradient, in numpy over pyscf pieces, and the
+    sign-independent probes of its Lambda and densities.
+
+    pyscf has no density-fitted CCSD gradient; this is the missing reference. It differentiates what terco's
+    --riccsd computes: an exact-ERI RHF reference with a fitted correlation energy,
+
+        E_corr = sum_pq gamma_pq f_pq + 1/2 sum_pqrs Gamma_pqrs (pq|rs)_fit,
+
+    over all MOs (frozen ones included), gamma and Gamma symmetrised. The Fock matrix in E_corr is the
+    reference's, so only the fluctuation integrals are fitted. Lambda, the amplitudes and the densities are
+    pyscf's (dfccsd, ccsd_lambda or ccsd_t_lambda_slow, ccsd_rdm or ccsd_t_rdm_slow); the code here is the
+    orbital response (multipliers z holding the orbitals canonical: f_ai = 0, core-active f_ci = 0 and, because
+    (T) singles out canonical orbitals, the active occupied and the virtual blocks) and the AO contraction
+    with the derivative integrals, exact four-centre ones for the reference and 3- and 2-centre ones for the
+    fit. It is the finite-difference-validated tools/cpu_validation/ri_ccsd_gradient.py of the metalquicha
+    reference, with the SCF taken from the caller (converged to a tight gradient) instead of re-run at pyscf's
+    default tolerance.
+
+    Returns (gradient (natm, 3) in Eh/Bohr in the atom order of `mol`, probes dict, checks dict). Every probe is
+    invariant to the sign and phase of each orbital: norms, traces and overlaps of full tensors."""
+    from pyscf.cc import ccsd_rdm, ccsd_t_lambda_slow, ccsd_t_rdm_slow
+
+    eris = mycc.ao2mo() if triples else None
+    e_triples = mycc.ccsd_t(eris=eris) if triples else 0.0
+    mycc.e_triples = e_triples
+    if triples:
+        ok, mycc.l1, mycc.l2 = ccsd_t_lambda_slow.kernel(mycc, eris, mycc.t1, mycc.t2, max_cycle=200, tol=1.0e-12,
+                                                         verbose=0)
+    else:
+        mycc.conv_tol_normt = 1.0e-12
+        mycc.solve_lambda()
+        ok = mycc.converged_lambda
+    if not ok:
+        raise ConvergenceError("the RI-CCSD Lambda equations did not converge")
+    t1, t2, l1, l2 = mycc.t1, mycc.t2, mycc.l1, mycc.l2
+    c = mf.mo_coeff
+    n = c.shape[0]
+    n_occ = mol.nelectron // 2
+    n_core = frozen
+    eps = mf.mo_energy
+    fock = np.diag(eps)
+    dm_hf = mf.make_rdm1()
+
+    auxmol = df.addons.make_auxmol(mol, auxbasis)
+    n_aux = auxmol.nao
+    three = df.incore.aux_e2(mol, auxmol, "int3c2e")                   # (mu nu|P)
+    metric = auxmol.intor("int2c2e")
+    fit = np.linalg.solve(metric, three.reshape(n * n, n_aux).T).reshape(n_aux, n, n)   # c^P_{mu nu}
+    three_mo = np.einsum("mnP,mp,nq->pqP", three, c, c)
+    fit_mo = np.einsum("Pmn,mp,nq->Ppq", fit, c, c)
+    g_mo = np.einsum("pqP,Prs->pqrs", three_mo, fit_mo)
+
+    if triples:
+        d1 = ccsd_t_rdm_slow._gamma1_intermediates(mycc, t1, t2, l1, l2, eris)
+        d2 = ccsd_t_rdm_slow._gamma2_intermediates(mycc, t1, t2, l1, l2, eris)
+    else:
+        d1 = ccsd_rdm._gamma1_intermediates(mycc, t1, t2, l1, l2)
+        d2 = ccsd_rdm._gamma2_intermediates(mycc, t1, t2, l1, l2)
+    gamma = ccsd_rdm._make_rdm1(mycc, d1, with_frozen=True, with_mf=False)
+    big = ccsd_rdm._make_rdm2(mycc, d1, d2, with_dm1=False, with_frozen=True)
+    gamma = 0.5 * (gamma + gamma.T)
+    big = 0.25 * (big + big.transpose(1, 0, 2, 3) + big.transpose(0, 1, 3, 2) + big.transpose(1, 0, 3, 2))
+    big = 0.5 * (big + big.transpose(2, 3, 0, 1))
+
+    def v_of(gam_mo):
+        p_ao = c @ gam_mo @ c.T
+        vj, vk = mf.get_jk(mol, p_ao, hermi=1)
+        return c.T @ (vj - 0.5 * vk) @ c
+
+    # sign-independent probes. g3 = Gamma b with b the J^-1/2 three-index factor: any orthogonal change of the
+    # auxiliary index leaves its norm alone, as a sign flip of an orbital does.
+    jm_w, jm_u = np.linalg.eigh(metric)
+    b_mo = np.einsum("pqP,PQ->pqQ", three_mo, (jm_u / np.sqrt(jm_w)) @ jm_u.T)
+    g3 = np.einsum("pqrs,rsP->pqP", big, b_mo, optimize=True)
+    e_dens = np.einsum("pq,pq", gamma, fock) + 0.5 * np.einsum("pqP,pqP", g3, b_mo)
+    e_corr = mycc.e_corr + e_triples
+    checks = {"energy": abs(e_dens - e_corr),
+              "energy_ao_fit": abs(np.einsum("pq,pq", gamma, fock) + 0.5 * np.einsum("pqrs,pqrs", big, g_mo) - e_corr)}
+    probes = {"L1_NORM": np.linalg.norm(l1), "L2_NORM": np.linalg.norm(l2),
+              "L1_T1": np.einsum("ia,ia", l1, t1), "L2_T2": np.einsum("ijab,ijab", l2, t2),
+              "GAMMA_SQ": (gamma ** 2).sum(), "GAMMA_TR_OCC": np.trace(gamma[:n_occ, :n_occ]),
+              "GAMMA_TR_VIR": np.trace(gamma[n_occ:, n_occ:]), "G3_NORM": np.linalg.norm(g3),
+              "GAMMA2_NORM": np.linalg.norm(big), "E_FROM_DENSITIES": e_dens}
+
+    pairs = [(a, i) for i in range(n_occ) for a in range(n_occ, n)]
+    pairs += [(i, k) for k in range(n_core) for i in range(n_core, n_occ)]
+    pairs += [(j, i) for i in range(n_core, n_occ) for j in range(i + 1, n_occ) if abs(eps[j] - eps[i]) > 1.0e-7]
+    pairs += [(b, a) for a in range(n_occ, n) for b in range(a + 1, n) if abs(eps[b] - eps[a]) > 1.0e-7]
+
+    def z_matrix(z):
+        zs = np.zeros((n, n))
+        for value, (p, q) in zip(z, pairs):
+            zs[p, q] += 0.5 * value
+            zs[q, p] += 0.5 * value
+        return zs
+
+    def residual(x):
+        return np.array([x[p, q] - x[q, p] for p, q in pairs])
+
+    def generalised_fock(gam, big_, v_gam):
+        x = fock @ gam + np.einsum("tqrs,pqrs->tp", g_mo, big_)
+        x[:, :n_occ] += 2.0 * v_gam[:, :n_occ]
+        return x
+
+    rhs = residual(generalised_fock(gamma, big, v_of(gamma)))
+    op = np.zeros((len(pairs), len(pairs)))
+    zero_big = np.zeros_like(big)
+    for k in range(len(pairs)):
+        unit = np.zeros(len(pairs))
+        unit[k] = 1.0
+        zs = z_matrix(unit)
+        op[:, k] = residual(generalised_fock(zs, zero_big, v_of(zs)))
+    z = np.linalg.solve(op, -rhs)
+    gamma_rel = gamma + z_matrix(z)
+    x_rel = generalised_fock(gamma_rel, big, v_of(gamma_rel))
+    checks["stationary"] = abs(residual(x_rel)).max()
+    x_sym = 0.5 * (x_rel + x_rel.T)
+
+    p_ao = c @ gamma_rel @ c.T
+    w_ao = c @ x_sym @ c.T
+    big_ao = np.einsum("pqrs,mp,nq,lr,ks->mnlk", big, c, c, c, c, optimize=True)
+    gamma3 = np.einsum("mnlk,Plk->Pmn", big_ao, fit)
+    gamma2 = np.einsum("Pmn,Qmn->PQ", gamma3, fit)
+    gamma2 = 0.5 * (gamma2 + gamma2.T)
+    fock_density = np.einsum("mn,lk->mnlk", p_ao, dm_hf) - 0.5 * np.einsum("ml,nk->mnlk", p_ao, dm_hf)
+
+    grad_hf = mf.nuc_grad_method()
+    grad_hf.verbose = 0
+    gradient = grad_hf.kernel().copy()
+    hcore_deriv = grad_hf.hcore_generator(mol)
+    s1 = mol.intor("int1e_ipovlp")
+    e1 = mol.intor("int2e_ip1").reshape(3, n, n, n, n)
+    ip1 = df.incore.aux_e2(mol, auxmol, "int3c2e_ip1")
+    ip2 = df.incore.aux_e2(mol, auxmol, "int3c2e_ip2")
+    v1 = auxmol.intor("int2c2e_ip1")
+    ao_slices = mol.aoslice_by_atom()
+    aux_slices = auxmol.aoslice_by_atom()
+    for atom in range(mol.natm):
+        p0, p1 = ao_slices[atom, 2:]
+        q0, q1 = aux_slices[atom, 2:]
+        g = np.einsum("xmn,mn->x", hcore_deriv(atom), p_ao)
+        g -= np.einsum("xijkl,ijkl->x", e1[:, p0:p1], fock_density[p0:p1])
+        g -= np.einsum("xjikl,ijkl->x", e1[:, p0:p1], fock_density[:, p0:p1])
+        g -= np.einsum("xklij,ijkl->x", e1[:, p0:p1], fock_density[:, :, p0:p1])
+        g -= np.einsum("xlkij,ijkl->x", e1[:, p0:p1], fock_density[:, :, :, p0:p1])
+        g -= 2.0 * np.einsum("xmnP,Pmn->x", ip1[:, p0:p1], gamma3[:, p0:p1])
+        g -= np.einsum("xmnP,Pmn->x", ip2[:, :, :, q0:q1], gamma3[q0:q1])
+        g += np.einsum("xPQ,PQ->x", v1[:, q0:q1], gamma2[q0:q1])
+        g += 2.0 * np.einsum("xmn,mn->x", s1[:, p0:p1], w_ao[p0:p1])
+        gradient[atom] += g
+    checks["translation"] = abs(gradient.sum(axis=0)).max()
+    return gradient, probes, checks
+
+
+def gen_ccsd_grad():
+    """The RI-CCSD and RI-CCSD(T) analytic-gradient anchors: water distorted to C1 (test/ccgrad_water.xyz, so no
+    gradient component vanishes by symmetry), STO-3G and cc-pVDZ, frozen core 0 and 1, terco's own cc-pVDZ-RIFIT
+    auxiliary set in the orbital basis's convention (Cartesian with STO-3G, spherical with cc-pVDZ), the geometry in
+    Bohr converted with CODATA 2018 as terco. The SCF is exact-ERI RHF converged to energy 1e-13 and gradient 1e-11 (the Lambda probes and the gradient are first order in the
+    orbital error); amplitudes to 1e-13 / 1e-11, Lambda to 1e-12. Pyscf runs on one thread (lib.num_threads(1));
+    with OMP_NUM_THREADS=1 as well, for the BLAS, a rerun reproduces the file bit for bit (with 4 BLAS threads it
+    differs in the last digits, 1e-14 at most).
+
+    Each file holds, in this order: NATM NO NV NAUX NFROZEN, E_SCF, the energies (E_CCSD_CORR, E_T, E_CCSD_T = SCF
+    + CCSD + (T)), then for CCSD and again with suffix _T for CCSD(T) the sign-independent probes of Lambda and the
+    correlation densities -- L1_NORM, L2_NORM, L1_T1 and L2_T2 (the overlaps sum l1 t1 and sum l2 t2 of pyscf's raw
+    arrays), GAMMA_SQ (sum of squares of gamma over all MOs), GAMMA_TR_OCC and GAMMA_TR_VIR, G3_NORM (norm of
+    g3_pqP = sum_rs Gamma_pqrs b_rsP with b the J^-1/2 fitted factor, unchanged by an orthogonal rotation of the
+    auxiliary index), GAMMA2_NORM (norm of the symmetrised two-particle Gamma), E_FROM_DENSITIES (sum gamma f + 1/2
+    sum g3 b, which must equal the correlation energy and is asserted to 1e-9 here) -- and the gradient,
+    GRAD / GRAD_T as natm x 3 matrices in Eh/Bohr in the atom order of the .xyz.
+
+    The gradient is the exact response: what the energy strictly differentiates (the multipliers hold the
+    orbitals canonical, f_ai = 0 and, with a frozen core, f_ci = 0; for (T) also the active occupied and virtual
+    blocks), by _ri_ccsd_response_gradient, the metalquicha tools/cpu_validation/ri_ccsd_gradient.py. No
+    relaxed-density-only or Z-vector shortcut."""
+    from pyscf import lib
+    from pyscf.cc import dfccsd
+    lib.num_threads(1)   # a threaded reduction changes the last digits from run to run: one thread is reproducible
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    xyz = "ccgrad_water.xyz"
+    aux_basis = "cc-pvdz-rifit"
+    files = [TEST / xyz, TEST / "basis_sets" / "cc-pvdz.json", TEST / "basis_sets" / "sto-3g.json",
+             TEST / "basis_sets" / (aux_basis + ".json"), TEST / "ccsd_grad_support.F90", TEST / "check_ccsd_grad_ref.F90",
+             TEST / "check_ccsd_grad_fd.F90"]
+    lines = (TEST / xyz).read_text().splitlines()
+    natm = int(lines[0])
+    atoms = [(ln.split()[0], tuple(float(v) / bohr for v in ln.split()[1:4])) for ln in lines[2:2 + natm]]
+    elements = {sym: gto.charge(sym) for sym, _ in atoms}
+    aux = bse_json_basis(TEST / "basis_sets" / (aux_basis + ".json"), elements)
+    for basis, tag in (("sto-3g", "sto3g"), ("cc-pvdz", "ccpvdz")):
+        # terco's auxiliary basis follows the ORBITAL basis's convention (pyscf's auxmol.cart = mol.cart): an
+        # untagged JSON such as sto-3g.json is Cartesian, and with it the cc-pVDZ-RIFIT d and f shells. An s,p basis
+        # is the same either way, so the pyscf orbital basis is cart=True there to give the fit the same space
+        # (spherical aux differs from it by 6.5e-7 in the STO-3G DF-MP2 energy).
+        mol = gto.M(atom=atoms, unit="Bohr", cart=(basis == "sto-3g"), verbose=0,
+                    basis=bse_json_basis(TEST / "basis_sets" / (basis + ".json"), elements))
+        for frozen in (0, 1):
+            label = f"ccsd_grad {tag} fc{frozen}"
+            mf, _ = converge_tight(lambda mol=mol: scf.RHF(mol), None, label, conv_tol=1.0e-13,
+                                   conv_tol_grad=1.0e-11)
+            w = RefWriter(f"ccsd_grad_water_{tag}_fc{frozen}.ref")
+            w.header("ccsd_grad", files)
+            w.comment(f"{xyz} {basis}/{aux_basis} frozen {frozen}: pyscf DF-RCCSD(T) energies, sign-independent "
+                      f"Lambda and density probes, exact-response gradient (CCSD, then CCSD(T))")
+            results = []
+            for triples in (False, True):
+                mycc = dfccsd.RCCSD(mf, frozen=frozen)
+                mycc.with_df = df.DF(mol, auxbasis=aux)
+                mycc.conv_tol = 1.0e-13
+                mycc.conv_tol_normt = 1.0e-11
+                mycc.max_cycle = 200
+                mycc.kernel()
+                if not mycc.converged:
+                    raise ConvergenceError(f"{label}: pyscf DF-CCSD did not converge")
+                grad, probes, checks = _ri_ccsd_response_gradient(mol, mf, mycc, aux, frozen, triples)
+                if max(checks["energy"], checks["energy_ao_fit"], checks["stationary"]) > 1.0e-9:
+                    raise ConvergenceError(f"{label} triples={triples}: the densities do not reproduce the energy "
+                                           f"or the orbitals are not stationary: {checks}")
+                results.append((mycc, grad, probes))
+                print(f"  {label} (T)={triples}: " + " ".join(f"{k} {v:.1e}" for k, v in checks.items()))
+            ccsd, ccsd_t = results[0][0], results[1][0]
+            w.int_("NATM", natm)
+            w.int_("NO", mol.nelectron // 2 - frozen)
+            w.int_("NV", mol.nao - mol.nelectron // 2)
+            w.int_("NAUX", ccsd.with_df.get_naoaux())
+            w.int_("NFROZEN", frozen)
+            w.real("E_SCF", mf.e_tot)
+            w.real("E_CCSD_CORR", ccsd.e_corr)
+            w.real("E_T", ccsd_t.e_triples)
+            w.real("E_CCSD_T", ccsd_t.e_tot + ccsd_t.e_triples)
+            for (_, grad, probes), suffix in zip(results, ("", "_T")):
+                for key, value in probes.items():
+                    w.real(key + suffix, value)
+                w.matrix("GRAD" + suffix, grad)
+            w.end()
+            w.write()
+
+
 def gen_fukui_chelpg():
     """test/check_fukui.F90's CHELPG-condensed Fukui case: RHF/cc-pVDZ water
     at that file's Bohr geometry (mqc's test_fukui geometry, the one its
@@ -7801,6 +8041,7 @@ CASES = {
     "hirshfeld": gen_hirshfeld,
     "chelpg": gen_chelpg,
     "rccsd_ints": gen_rccsd_ints,
+    "ccsd_grad": gen_ccsd_grad,
     "fukui_chelpg": gen_fukui_chelpg,
     "mult": gen_mult,
     "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),
