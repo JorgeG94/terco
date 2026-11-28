@@ -8,6 +8,7 @@ target_sources(
           trc_device_binding.F90 # one GPU per rank: trc_bind_device and friends
           trc_hip.F90        # hipBLAS/hipSOLVER C interfaces (empty unless TERCO_HIP)
           trc_linalg.F90     # dense linear algebra on device-resident matrices
+          trc_contract.F90   # pairwise contraction of up to four-index tensors: reorder, then GEMM
           trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
           trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
